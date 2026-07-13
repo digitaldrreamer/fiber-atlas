@@ -6,8 +6,10 @@ Fiber Atlas is a read-layer for Fiber. It turns the network's raw gossip and its
 
 It has two parts:
 
-- **Atlas** — a network-wide view of nodes, channels, capacity, fee policy, and channel liveness, built from a single Fiber node's gossip graph.
+- **Atlas** — a network-wide view of *every* node and channel — capacity, fee policy, and liveness — built from the gossip graph. You run one node to observe them all; it is **not** a dashboard for the single node you operate.
 - **Faultline** — an on-chain reliability feed. It watches CKB L1 for channel closes and penalty spends, attributes them back to nodes via the gossip graph, and surfaces an **unforgeable** record of who force-closed and who got penalized.
+
+**Two things set Fiber Atlas apart from single-node operability tools:** it is *network-wide* — every node from the gossip graph, not a cockpit for the one node you run — and it is *on-chain* — reliability grounded in verifiable CKB L1 events, not self-reported metrics. A node cockpit answers *"is my node healthy?"*; Fiber Atlas answers *"which of the other nodes can I trust?"*
 
 > Built for the **[Gone in 60ms — Fiber Network Infrastructure Hackathon](https://talk.nervos.org/t/gone-in-60ms-fiber-network-infrastructure-hackathon-announcement/10418)** (July 1–15, 2026). Category 3 (Merchant, Liquidity, LSP, Multi-Asset Infrastructure) with strong overlap into Category 2 (Node, Routing, Diagnostics Infrastructure).
 
@@ -29,7 +31,7 @@ Fiber Atlas fills that gap as a **shared, verifiable data plane** that many role
 | **Node operators** | Monitor, benchmark, and spot degradation in their own and peers' channels |
 | **Downstream builders** | Build dashboards, alerting, SLA products, and bonded-LSP layers on the API |
 
-It never holds user funds or moves value. It observes and serves derived signal — the canonical infrastructure shape (block explorers, graph indexers, liveness feeds all live here).
+Crucially, every one of these consumers is asking about *other* nodes, not itself — which is why Atlas is network-scoped rather than a per-node operability tool. It never holds user funds or moves value, and it never acts on the network (no rebalancing, no payments). It observes and serves derived signal — the canonical infrastructure shape (block explorers, graph indexers, liveness feeds all live here).
 
 ---
 
