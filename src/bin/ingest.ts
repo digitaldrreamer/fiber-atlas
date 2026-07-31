@@ -31,8 +31,24 @@ const store = new Store(cfg.dbPath);
 console.log(`fiber rpc  ${fiberUrl}`);
 console.log(`db         ${cfg.dbPath}\n`);
 
+/**
+ * Peer count is a hard health gate, not a statistic.
+ *
+ * An fnn node with zero peers keeps answering `graph_channels` from whatever it
+ * synced before its connections went away. Nothing errors, the node logs nothing,
+ * and every derived metric computes cleanly over a stale subgraph. The join rate is
+ * measured *against gossip*, so a truncated graph silently flatters it — a node
+ * isolated by a version mismatch reported 43% while seeing a fifth of the network.
+ * See plan.md §1.2.
+ */
+async function peerCount(): Promise<number> {
+  const res = await rpc.call<{ peers: unknown[] }>('list_peers', []);
+  return res.peers?.length ?? 0;
+}
+
 async function once(): Promise<void> {
   const t0 = Date.now();
+  const peers = await peerCount();
   const r = await ingestGraph(rpc, store);
   const secs = ((Date.now() - t0) / 1000).toFixed(1);
   console.log(
@@ -53,8 +69,18 @@ async function once(): Promise<void> {
          (SELECT COUNT(*) FROM channel WHERE node1_pubkey IS NOT NULL AND open_tx_hash IS NOT NULL) AS both`,
     )
     .get() as { gossip: number; l1: number; both: number };
+
+  if (peers === 0) {
+    console.log(`  peers=0 — NODE IS ISOLATED. Gossip is stale; join rate suppressed.`);
+    console.log(`  Check the fnn version against the network: the version distribution in`);
+    console.log(`  graph_nodes is authoritative, releases/latest is not (plan.md §1.2).`);
+    return;
+  }
+
   const pct = j.gossip === 0 ? 'n/a' : `${((j.both / j.gossip) * 100).toFixed(1)}%`;
-  console.log(`  join: gossip=${j.gossip} l1=${j.l1} overlap=${j.both} (${pct} of gossip channels seen on L1)`);
+  console.log(
+    `  peers=${peers}  join: gossip=${j.gossip} l1=${j.l1} overlap=${j.both} (${pct} of gossip channels seen on L1)`,
+  );
 }
 
 try {
@@ -62,7 +88,13 @@ try {
     const interval = Number(values.interval) * 1000;
     console.log(`watching every ${values.interval}s (ctrl-c to stop)\n`);
     for (;;) {
-      await once();
+      // A watcher that exits on the first transient error is not a watcher. The node
+      // restarts, the network drops — the loop must outlive both.
+      try {
+        await once();
+      } catch (err) {
+        console.error(`  ingest pass failed (retrying next tick): ${err instanceof Error ? err.message : String(err)}`);
+      }
       await sleep(interval);
     }
   } else {

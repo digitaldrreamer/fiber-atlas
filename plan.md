@@ -156,9 +156,9 @@ No dates. Each phase ends at a verifiable state, and phases 1 and 2 are genuinel
 - [ ] **A+01** proper: assert ingested counts match the source node's own graph RPC.
       Currently true by construction, not asserted.
 - [ ] Derived signals: liveness buckets, `enabled` handling, node liveness/centrality, multi-asset coverage (**A+02**, **A+03**).
-      Blocked on gossip maturity, not on code: a freshly synced node reports **every** channel
-      direction as `null`, so there is nothing to bucket yet. Liveness needs `ChannelUpdate`
-      coverage to accumulate first.
+      **Unblocked.** The "no ChannelUpdate coverage" that appeared to block this was a symptom of
+      the isolated node in §1.2, not a property of the network. On a correctly-versioned peered
+      node, coverage went from 2/394 directions to 902/936 within one refresh.
 
 ### Phase 3 — the join
 - [ ] Attribute Phase 1's events via `channel_outpoint` → `{node1, node2}` (**A+05**).
