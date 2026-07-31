@@ -69,14 +69,16 @@ export class CkbRpc {
   }
 
   async call<T>(method: string, params: unknown[]): Promise<T> {
-    const retries = this.#opts.retries ?? 4;
+    const retries = this.#opts.retries ?? 12;
     let lastErr: unknown;
 
     for (let attempt = 0; attempt <= retries; attempt++) {
       if (attempt > 0) {
-        // Exponential backoff. The public endpoint throttles under load, and a
-        // backfill is exactly the load that triggers it.
-        await sleep(Math.min(250 * 2 ** attempt, 8_000));
+        // Exponential backoff, capped at 60s. A full backfill is a multi-hour crawl
+        // over a residential link; a brief connectivity drop must not end it. With
+        // these defaults the client rides out roughly ten minutes of outage before
+        // giving up, and the scan resumes from its persisted cursor regardless.
+        await sleep(Math.min(500 * 2 ** attempt, 60_000));
       }
       try {
         const ac = new AbortController();

@@ -31,13 +31,32 @@ This was the open question gating everything, and the answer is that a public go
 
 **Consequence:** running an `fnn` instance is a permanent, non-negotiable component of Fiber Atlas — for us and for anyone self-hosting it. That belongs in the README as an operational fact, not a dev-setup footnote.
 
-### 1.2 Running the node is cheap
+### 1.2 Pin the version the NETWORK runs, not the latest stable release
+
+**`releases/latest` is misleading for Fiber, and following it silently isolates the node.**
+
+The v0.9.0 line ships as GitHub *pre-releases*, so `releases/latest` still reports **v0.8.1** (2026-04-15). The testnet network has moved on: of the 64 nodes in a gossip snapshot on 2026-07-31, **46 ran `0.9.0-rc7`** and only 8 ran `0.8.1`.
+
+An `fnn v0.8.1` node on that network establishes P2P connections and then has them dropped. Observed symptoms, in the order they appear:
+
+- `list_peers` returns `[]`
+- `graph_channels` still answers, with a **stale, partial graph** frozen at whatever arrived before the peers went away (197 channels against ≥1000 live funding cells on L1)
+- no error anywhere, and the node log is silent by default
+
+Upgrading to `v0.9.0-rc7` fixed it outright: bootnodes auto-connect and peers hold. The graph RPC types are **byte-identical** between v0.8.1 and v0.9.0-rc7 (`crates/fiber-json-types/src/graph.rs`), so nothing in SPEC-ATLAS or the ingest changed — this is purely P2P protocol compatibility.
+
+Two normative consequences:
+
+- **Pin to the version the network runs**, checked against the `version` distribution in `graph_nodes`, not against `releases/latest`. That distribution is itself the check, and it is free.
+- **Zero peers must be a hard health failure.** This is the most dangerous failure mode found so far: it is indistinguishable from a quiet network at every layer above it. Every downstream metric computes cleanly over the stale subgraph, and the join rate in particular is measured *against gossip*, so a truncated graph silently flatters it. `/health` MUST expose peer count, and the ingest MUST refuse to report a join rate when peers are zero.
+
+### 1.3 Running the node is cheap
 
 - **No local CKB chain sync.** `ckb.rpc_url: "https://testnet.ckbapp.dev/"` ships in the default testnet config; the Fiber node uses a remote CKB RPC.
 - **No Rust build.** Prebuilt `fnn_v0.8.1-x86_64-linux.tar.gz` on the [releases page](https://github.com/nervosnetwork/fiber/releases).
 - Gossip graph syncs automatically via the two configured `bootnode_addrs` on `/tcp/8228`.
 
-### 1.3 CKB L1 is fully open, and Faultline's data is already there
+### 1.4 CKB L1 is fully open, and Faultline's data is already there
 
 Verified live against `https://testnet.ckbapp.dev/` on 2026-07-31:
 
@@ -59,7 +78,7 @@ The code hashes come from the shipped testnet config (§1.1 source):
 
 **This is the plan's biggest structural finding.** The old plan sequenced Faultline last because it was assumed to depend on the gossip graph. It does not. Scanning L1 by `CommitmentLock` code hash discovers force-closes **network-wide, independently of Atlas** — the gossip graph is needed only to *attribute* an event to `{node1, node2}`, not to *find* it. Faultline detection can start on day one with no Fiber node running, against abundant real testnet data. The old plan's headline risk ("sparse on-chain events on testnet, may need to seed a scripted force-close") is dead: there is more than enough real data.
 
-### 1.4 The specs are pinned to a stale Fiber version — must be corrected
+### 1.5 The specs are pinned to a stale Fiber version — must be corrected
 
 `SPEC-ATLAS.md` §2 says "verified against Fiber `v0.6.1`". Current release is **v0.8.1** (2026-04-15); the repo is actively pushed (2026-07-30). Two concrete drifts found:
 
@@ -68,7 +87,7 @@ The code hashes come from the shipped testnet config (§1.1 source):
 
 `ChannelInfo`'s field set otherwise matches SPEC-ATLAS §2.2 exactly (`channel_outpoint`, `node1`, `node2`, `created_timestamp`, `update_info_of_node1/2`, `capacity`, `chain_hash`, `udt_type_script`), with the two `update_info_of_*` being **nullable** — a detail the spec should state.
 
-### 1.5 The balance limitation survives, but needs sharpening
+### 1.6 The balance limitation survives, but needs sharpening
 
 `ChannelUpdateInfo` gained a field whose name looks like it refutes SPEC-ATLAS §5 and the README's "no live routable liquidity" claim:
 
