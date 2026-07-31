@@ -212,7 +212,10 @@ export class Store {
     // Read-only is enforced by SQLite, not by convention. The API serves the same
     // files the scanner and ingest write, and a serving process has no business
     // mutating them — an accidental write is a corrupted archive, not a bad response.
-    this.db = new DatabaseSync(path, opts.readOnly ? { readOnly: true } : undefined);
+    // The options argument is omitted entirely rather than passed as undefined:
+    // node:sqlite rejects an explicit undefined with `The "options" argument must be
+    // an object`. Node 24.10 tolerated it, 24.18 does not.
+    this.db = opts.readOnly ? new DatabaseSync(path, { readOnly: true }) : new DatabaseSync(path);
     if (opts.readOnly) return;
 
     // The L1 backfill and the gossip ingest are separate processes writing the same

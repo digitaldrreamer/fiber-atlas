@@ -311,7 +311,11 @@ function summary(c: Ctx) {
 // Server
 // ---------------------------------------------------------------------------
 
-export function createApi(networks: NetworkStore[], opts: { version?: string } = {}) {
+export function createApi(
+  networks: NetworkStore[],
+  opts: { version?: string; pending?: string[] } = {},
+) {
+  const pending = new Set(opts.pending ?? []);
   const byName = new Map(networks.map((n) => [n.name, n]));
 
   const send = (res: ServerResponse, code: number, body: unknown) => {
@@ -372,15 +376,29 @@ export function createApi(networks: NetworkStore[], opts: { version?: string } =
             gossip_channels_seen: sync?.channels_seen ?? null,
           };
         });
-        return send(res, 200, { ok: true, networks: health });
+        return send(res, 200, {
+          ok: true,
+          networks: health,
+          // Named explicitly so a fresh deployment is observable: a network here has
+          // no database yet because its first scan has not finished.
+          backfilling: [...pending],
+        });
       }
 
       if (seg[0] !== 'v0') return send(res, 404, { error: 'not found' });
 
-      const net = byName.get(seg[1] ?? '');
+      const wanted = seg[1] ?? '';
+      const net = byName.get(wanted);
       if (!net) {
+        if (pending.has(wanted)) {
+          return send(res, 503, {
+            error: `network '${wanted}' is still backfilling and has no data yet`,
+            network: wanted,
+            retry: 'poll /health; this becomes available when the first scan completes',
+          });
+        }
         return send(res, 404, {
-          error: `unknown network '${seg[1] ?? ''}'`,
+          error: `unknown network '${wanted}'`,
           networks: [...byName.keys()],
         });
       }

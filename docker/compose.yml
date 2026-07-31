@@ -18,18 +18,17 @@
 
 name: fiber-atlas
 
-# `data/` is a bind mount, so the container writes as a host uid. Defaults to 1000
-# (the usual first human user); override ATLAS_UID/ATLAS_GID in docker/.env if yours
-# differs, or SQLite fails with "attempt to write a readonly database".
-#   echo "ATLAS_UID=$(id -u)" >> docker/.env && echo "ATLAS_GID=$(id -g)" >> docker/.env
+# The SQLite archive lives in a NAMED VOLUME, not a bind mount into the repo.
+# A deploy that clones this repo would put the database inside the checkout, where
+# the next redeploy destroys it — taking a multi-hour backfill with it. The named
+# volume also seeds its ownership from the image, so there is no host-uid to match.
 x-atlas: &atlas
   build:
     context: ..
     dockerfile: docker/Dockerfile.atlas
   image: fiber-atlas/atlas:latest
-  user: "${ATLAS_UID:-1000}:${ATLAS_GID:-1000}"
   volumes:
-    - ../data:/data
+    - atlas-data:/data
 
 x-fnn-build: &fnn-build
   build:
@@ -154,6 +153,8 @@ services:
     command: ["node", "src/bin/stats.ts"]
 
 volumes:
+  # The Faultline archive and the gossip store, for both networks.
+  atlas-data:
   # fnn keys and chain state. Named volumes, not bind mounts: these hold private
   # keys and must never land in the repo tree (see the .fnn incident in git history).
   fnn-testnet:

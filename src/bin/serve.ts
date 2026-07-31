@@ -21,10 +21,12 @@ const host = process.env['HOST'] ?? '0.0.0.0';
 const dir = process.env['FIBER_ATLAS_DB_DIR'] ?? './data';
 
 const networks: NetworkStore[] = [];
+const pending: string[] = [];
 for (const name of Object.keys(NETWORKS)) {
   const path = join(dir, `fiber-atlas.${name}.db`);
   if (!existsSync(path)) {
-    console.warn(`skipping ${name}: no database at ${path}`);
+    pending.push(name);
+    console.warn(`${name}: no database yet at ${path} — not served until the scan creates it`);
     continue;
   }
   // Read-only: the API shares these files with the scanner and ingest, and has no
@@ -33,12 +35,16 @@ for (const name of Object.keys(NETWORKS)) {
   console.log(`serving ${name}  <- ${path}`);
 }
 
+// Come up regardless. On a fresh deployment the API starts alongside the scanners
+// that produce its data, so exiting here means restart-looping for the whole
+// backfill — hours on testnet — and no /health to show progress against. Serving
+// nothing while saying so is strictly better than being absent; requests for a
+// network with no database get an honest 503, never an empty-but-confident answer.
 if (networks.length === 0) {
-  console.error(`no databases found in ${dir}. Run a scan first (npm run scan).`);
-  process.exit(1);
+  console.warn(`no databases in ${dir} yet. Serving /health only until a scan produces one.`);
 }
 
-const server = createApi(networks);
+const server = createApi(networks, { pending });
 server.listen(port, host, () => {
   console.log(`fiber-atlas api on http://${host}:${port}`);
 });

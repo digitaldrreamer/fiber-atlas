@@ -19,7 +19,10 @@ WORKDIR /app
 COPY package.json ./
 COPY src ./src
 
-# SQLite lives on a mounted volume shared with the host; the container user must own it.
+# Created and chowned here so the named volume seeds correct ownership: Docker
+# copies the image's content and permissions into a fresh volume on first mount.
+# Without it the volume materialises root-owned and SQLite reports the database
+# as read-only.
 RUN mkdir -p /data && chown -R atlas:atlas /data /app
 USER atlas
 
