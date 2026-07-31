@@ -156,6 +156,24 @@ CREATE TABLE IF NOT EXISTS channel_update (
   PRIMARY KEY (channel_outpoint, direction)
 );
 
+-- ---------------------------------------------------------------------------
+-- Wall-clock, fetched from chain headers. Never interpolated.
+--
+-- Everything Faultline records is stamped with a block number and nothing else, so
+-- until this table is populated there is no honest time axis anywhere in the API:
+-- "era 38" is a 1M-block bucket that a reader will silently translate into months.
+-- Estimating a timestamp from a neighbouring block would be the exact failure this
+-- project exists to avoid, so each row is a header the chain actually returned.
+--
+-- Sparse by design: only blocks that something references. A row's absence means
+-- "not fetched yet", which the API must render as null, never as an estimate.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS block_time (
+  block_number INTEGER PRIMARY KEY,
+  timestamp_ms INTEGER NOT NULL,
+  fetched_at   INTEGER NOT NULL
+);
+
 -- Cursor/health for the gossip ingest loop.
 CREATE TABLE IF NOT EXISTS gossip_sync (
   id             INTEGER PRIMARY KEY CHECK (id = 1),
@@ -619,6 +637,65 @@ export class Store {
           ORDER BY kind, attribution`,
       )
       .all() as { kind: string; attribution: string; n: number }[];
+  }
+
+  // -------------------------------------------------------------------------
+  // Block time
+  // -------------------------------------------------------------------------
+
+  /**
+   * Every block number anything in the archive refers to.
+   *
+   * The union is deliberately wider than `event`: a channel's open block never
+   * produces an event row, but the API dates a channel's lifetime from it, and a
+   * commitment's create/spend blocks are what a force-close timeline is drawn from.
+   */
+  static readonly REFERENCED_BLOCKS = `
+    SELECT block_number AS b FROM event
+    UNION SELECT open_block     FROM channel         WHERE open_block     IS NOT NULL
+    UNION SELECT close_block    FROM channel         WHERE close_block    IS NOT NULL
+    UNION SELECT created_block  FROM commitment_cell WHERE created_block  IS NOT NULL
+    UNION SELECT spend_block    FROM commitment_cell WHERE spend_block    IS NOT NULL`;
+
+  /** Referenced blocks with no header fetched yet, oldest first. */
+  blocksMissingTime(limit: number): number[] {
+    return (
+      this.db
+        .prepare(
+          `SELECT b FROM (${Store.REFERENCED_BLOCKS})
+             WHERE b NOT IN (SELECT block_number FROM block_time)
+             ORDER BY b LIMIT ?`,
+        )
+        .all(limit) as { b: number }[]
+    ).map((r) => r.b);
+  }
+
+  putBlockTimes(rows: readonly { blockNumber: number; timestampMs: number }[]): void {
+    const stmt = this.db.prepare(
+      `INSERT INTO block_time (block_number, timestamp_ms, fetched_at)
+            VALUES (?, ?, ?)
+       ON CONFLICT(block_number) DO NOTHING`,
+    );
+    const now = Date.now();
+    this.transaction(() => {
+      for (const r of rows) stmt.run(r.blockNumber, r.timestampMs, now);
+    });
+  }
+
+  /**
+   * How much of the archive can be placed in time.
+   *
+   * Published rather than kept internal: a UI that draws a date axis over 60%
+   * coverage is drawing a lie, and the only defence is telling it the number.
+   */
+  blockTimeCoverage(): { referenced: number; resolved: number } {
+    return this.db
+      .prepare(
+        `SELECT (SELECT COUNT(*) FROM (${Store.REFERENCED_BLOCKS}))       AS referenced,
+                (SELECT COUNT(*) FROM (${Store.REFERENCED_BLOCKS}) r
+                   JOIN block_time bt ON bt.block_number = r.b)           AS resolved`,
+      )
+      .get() as { referenced: number; resolved: number };
   }
 
   transaction<T>(fn: () => T): T {

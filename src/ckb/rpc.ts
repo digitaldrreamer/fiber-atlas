@@ -39,6 +39,13 @@ export interface GroupedTx {
   cells: [ioType: 'input' | 'output', ioIndex: string][];
 }
 
+/** Block header. `timestamp` is milliseconds since the epoch, hex-encoded. */
+export interface Header {
+  number: string;
+  hash: string;
+  timestamp: string;
+}
+
 export interface SearchKey {
   script: Script;
   script_type: 'lock' | 'type';
@@ -68,7 +75,8 @@ export class CkbRpc {
     this.#opts = opts;
   }
 
-  async call<T>(method: string, params: unknown[]): Promise<T> {
+  /** POST one JSON-RPC body — single object or batch array — with retry. */
+  async #send(method: string, body: unknown): Promise<unknown> {
     const retries = this.#opts.retries ?? 12;
     let lastErr: unknown;
 
@@ -90,13 +98,11 @@ export class CkbRpc {
               'Content-Type': 'application/json',
               'User-Agent': 'fiber-atlas/0.1',
             },
-            body: JSON.stringify({ id: ++this.#id, jsonrpc: '2.0', method, params }),
+            body: JSON.stringify(body),
             signal: ac.signal,
           });
           if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
-          const body = (await res.json()) as { result?: T; error?: { code: number; message: string } };
-          if (body.error) throw new RpcError(method, body.error.code, body.error.message);
-          return body.result as T;
+          return await res.json();
         } finally {
           clearTimeout(timer);
         }
@@ -108,6 +114,61 @@ export class CkbRpc {
       }
     }
     throw new Error(`${method} failed after ${retries + 1} attempts: ${String(lastErr)}`);
+  }
+
+  async call<T>(method: string, params: unknown[]): Promise<T> {
+    const body = (await this.#send(method, {
+      id: ++this.#id,
+      jsonrpc: '2.0',
+      method,
+      params,
+    })) as { result?: T; error?: { code: number; message: string } };
+    if (body.error) throw new RpcError(method, body.error.code, body.error.message);
+    return body.result as T;
+  }
+
+  /**
+   * One method, many parameter sets, one round trip.
+   *
+   * The block-time backfill needs a header per referenced block — 81k of them on
+   * testnet. Sent individually that is 81k round trips against a public endpoint,
+   * which is hours of pure latency and a good way to get rate-limited. Batched at
+   * 100 it is ~815 requests.
+   *
+   * Batch is standard JSON-RPC, but a proxy in front of a node may not implement
+   * it, and the failure is silent-ish: a non-array reply. `supportsBatch` lets the
+   * caller probe once and fall back to `call` rather than discover it 800 requests
+   * in. Responses are matched by `id`, never by position — the spec permits a
+   * server to reorder them.
+   */
+  async callBatch<T>(method: string, paramsList: unknown[][]): Promise<T[]> {
+    if (paramsList.length === 0) return [];
+    const ids = paramsList.map(() => ++this.#id);
+    const reply = await this.#send(
+      method,
+      paramsList.map((params, i) => ({ id: ids[i], jsonrpc: '2.0', method, params })),
+    );
+    if (!Array.isArray(reply)) {
+      throw new Error(`${method}: endpoint did not answer a JSON-RPC batch with an array`);
+    }
+    const byId = new Map<number, { result?: T; error?: { code: number; message: string } }>();
+    for (const r of reply as { id: number }[]) byId.set(r.id, r as never);
+    return ids.map((id, i) => {
+      const r = byId.get(id);
+      if (!r) throw new Error(`${method}: batch reply missing id ${id} (request ${i})`);
+      if (r.error) throw new RpcError(method, r.error.code, r.error.message);
+      return r.result as T;
+    });
+  }
+
+  /** Probe batch support once, cheaply, so a fallback is a decision and not a surprise. */
+  async supportsBatch(): Promise<boolean> {
+    try {
+      const r = await this.callBatch<unknown>('get_blockchain_info', [[]]);
+      return r.length === 1;
+    } catch {
+      return false;
+    }
   }
 
   async getTransaction(hash: string): Promise<Transaction | null> {
@@ -125,6 +186,19 @@ export class CkbRpc {
     const params: unknown[] = [searchKey, order, `0x${limit.toString(16)}`];
     if (after) params.push(after);
     return this.call('get_transactions', params);
+  }
+
+  /** Header only — the cheapest way to get a block's wall-clock time. */
+  async getHeaderByNumber(blockNumber: number): Promise<Header | null> {
+    return this.call('get_header_by_number', [`0x${blockNumber.toString(16)}`]);
+  }
+
+  /** `getHeaderByNumber` for many blocks in one round trip. See `callBatch`. */
+  async getHeadersByNumber(blockNumbers: readonly number[]): Promise<(Header | null)[]> {
+    return this.callBatch(
+      'get_header_by_number',
+      blockNumbers.map((n) => [`0x${n.toString(16)}`]),
+    );
   }
 }
 

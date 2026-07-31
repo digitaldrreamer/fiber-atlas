@@ -81,6 +81,20 @@ services:
     command:
       - 'while true; do node src/bin/scan.ts || echo "scan pass failed; retrying"; sleep "$$SCAN_INTERVAL"; done'
 
+  # Fetches a chain header per referenced block, so the archive can be placed in
+  # time. Runs as its own loop rather than inside the scan: it must re-run after
+  # every scan pass (each one discovers new blocks), it is idempotent, and its
+  # failure must not stop the scan — a missing timestamp is served as null, which
+  # is degraded but honest, whereas a stalled scan loses events outright.
+  blocktime-testnet:
+    <<: *atlas
+    restart: unless-stopped
+    environment:
+      FIBER_NETWORK: testnet
+      CKB_RPC_URL: ${TESTNET_CKB_RPC_URL:-https://testnet.ckbapp.dev/}
+      FIBER_ATLAS_DB: /data/fiber-atlas.testnet.db
+    command: ["node", "src/bin/blocktime.ts", "--watch", "--interval", "900"]
+
   # ---------------------------------------------------------------- mainnet ---
   fnn-mainnet:
     <<: *fnn-build
@@ -119,6 +133,15 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - 'while true; do node src/bin/scan.ts || echo "scan pass failed; retrying"; sleep "$$SCAN_INTERVAL"; done'
+
+  blocktime-mainnet:
+    <<: *atlas
+    restart: unless-stopped
+    environment:
+      FIBER_NETWORK: mainnet
+      CKB_RPC_URL: ${MAINNET_CKB_RPC_URL:-https://mainnet.ckbapp.dev/}
+      FIBER_ATLAS_DB: /data/fiber-atlas.mainnet.db
+    command: ["node", "src/bin/blocktime.ts", "--watch", "--interval", "900"]
 
   # ------------------------------------------------------------------- api ---
   # Serves every network whose database exists, side by side. Read-only: it opens
