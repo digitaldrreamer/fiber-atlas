@@ -117,3 +117,29 @@ Early — hackathon build in progress. Specs first; implementation tracked in [`
 ## License
 
 TBD before first release.
+
+---
+
+## Running the Faultline scanner
+
+Phase 1 is implemented: the L1 scanner detects and classifies channel closes, force-closes, and penalties directly from CKB L1. **No Fiber node is required for this** — detection is independent of the gossip graph (see [`SPEC-FAULTLINE.md`](./specs/SPEC-FAULTLINE.md) §2.3).
+
+Requires **Node 24+** (uses native TypeScript execution and the built-in `node:sqlite`). There are no runtime dependencies.
+
+```bash
+npm install                 # dev-only: typescript + @types/node
+npm run scan -- --pages 4   # scan 4 pages per pass; omit --pages for a full backfill
+npm run stats               # classification breakdown
+```
+
+Configuration is via environment variables:
+
+| Variable | Default | Notes |
+|---|---|---|
+| `FIBER_NETWORK` | `testnet` | `testnet` or `mainnet` — selects the lock code hashes |
+| `CKB_RPC_URL` | `https://testnet.ckbapp.dev/` | must have the indexer enabled |
+| `FIBER_ATLAS_DB` | `./data/fiber-atlas.<network>.db` | |
+
+The scan is resumable: an indexer cursor is persisted per pass after each page, and all writes are idempotent, so an interrupted run re-does at most one page.
+
+> **An empty scan is a configuration failure, not a quiet network.** Lock code hashes differ between testnet and mainnet, and a scanner pointed at the wrong set returns zero results indistinguishably from "nothing happened". The scanner preflights both hashes and refuses to start if either indexes nothing.

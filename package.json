@@ -1,0 +1,19 @@
+{
+  "name": "fiber-atlas",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Network visibility and on-chain reliability for the Fiber Network on CKB",
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "scan": "node --experimental-sqlite src/bin/scan.ts",
+    "stats": "node --experimental-sqlite src/bin/stats.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.6.0"
+  }
+}
