@@ -369,19 +369,47 @@ export function createApi(
             'SELECT last_run_at, channels_seen FROM gossip_sync WHERE id = 1',
           );
           const tip = one<{ hi: number | null }>(net, 'SELECT MAX(block_number) AS hi FROM event');
+
+          // Scan-cursor state, exposed because "the database exists" and "the scan
+          // has finished" are different facts, and only the second makes a count
+          // safe to quote. A mid-backfill store answers every query successfully
+          // with figures that are simply too low — indistinguishable, without this,
+          // from a network that genuinely has fewer channels. A reviewer comparing
+          // a partial testnet scan against the published totals reasonably concluded
+          // the deployment contradicted its own specs.
+          const cursors = all<{ scan_key: string; updated_at: number; started: number }>(
+            net,
+            `SELECT scan_key, updated_at, (last_cursor IS NOT NULL) AS started FROM scan_cursor`,
+          );
+          const counts = one<{ channels: number; events: number }>(
+            net,
+            'SELECT (SELECT COUNT(*) FROM channel) AS channels, (SELECT COUNT(*) FROM event) AS events',
+          );
+
           return {
             network: net.name,
             l1_max_event_block: tip?.hi ?? null,
             gossip_last_run_at: sync?.last_run_at ?? null,
             gossip_channels_seen: sync?.channels_seen ?? null,
+            l1_scan: {
+              channels_known: counts?.channels ?? 0,
+              events_known: counts?.events ?? 0,
+              cursors: cursors.map((c) => ({ scan: c.scan_key, last_advanced_at: c.updated_at })),
+              // Deliberately not a boolean "complete". Completeness cannot be proven
+              // from the cursor alone, and asserting it falsely is worse than saying
+              // when the scan last moved and letting the consumer judge.
+              note:
+                'A scan still advancing means counts are lower bounds. Compare last_advanced_at across polls: if it keeps moving, the backfill is still running.',
+            },
           };
         });
         return send(res, 200, {
           ok: true,
           networks: health,
-          // Named explicitly so a fresh deployment is observable: a network here has
-          // no database yet because its first scan has not finished.
-          backfilling: [...pending],
+          // Renamed from "backfilling", which claimed more than it checked: it only
+          // ever listed networks with no database file at all, and read as "no scan
+          // in progress" when a scan was in fact mid-flight.
+          networks_without_data: [...pending],
         });
       }
 

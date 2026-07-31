@@ -142,7 +142,9 @@ This is cheaper than it sounds: the Fiber node needs **no local CKB chain sync**
 
 ## Status
 
-In progress, as an ongoing project. Working today: the L1 scanner and classifier (both networks, full history backfilled), the gossip ingest, and the join between them. Not yet built: the HTTP API and dashboard. Tracked in [`plan.md`](./plan.md).
+In progress, as an ongoing project. Working today: the L1 scanner and classifier (both networks, full history backfilled), the gossip ingest, the join between them, and a read-only HTTP API — deployed and serving both networks at **[fiber-atlas.drreamer.digital](https://fiber-atlas.drreamer.digital)**. Not yet built: the dashboard, and `/lsps` from [`SPEC-ATLAS.md`](./specs/SPEC-ATLAS.md) §6. Tracked in [`plan.md`](./plan.md).
+
+> Counts served by a network still backfilling are **lower bounds**, not final figures. `/health` reports each network's scan-cursor state so you can tell the difference; a cursor whose `last_advanced_at` keeps moving between polls means the scan is still running.
 
 ## License
 
