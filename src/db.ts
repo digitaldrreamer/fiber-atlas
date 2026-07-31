@@ -207,9 +207,14 @@ SELECT e.id, e.kind, e.block_number, e.tx_hash, e.channel_outpoint, e.detail,
 export class Store {
   readonly db: DatabaseSync;
 
-  constructor(path: string) {
-    if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
-    this.db = new DatabaseSync(path);
+  constructor(path: string, opts: { readOnly?: boolean } = {}) {
+    if (path !== ':memory:' && !opts.readOnly) mkdirSync(dirname(path), { recursive: true });
+    // Read-only is enforced by SQLite, not by convention. The API serves the same
+    // files the scanner and ingest write, and a serving process has no business
+    // mutating them — an accidental write is a corrupted archive, not a bad response.
+    this.db = new DatabaseSync(path, opts.readOnly ? { readOnly: true } : undefined);
+    if (opts.readOnly) return;
+
     // The L1 backfill and the gossip ingest are separate processes writing the same
     // file. WAL allows one writer at a time; without a busy timeout the loser of a
     // race fails instead of waiting.

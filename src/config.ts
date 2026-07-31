@@ -7,10 +7,10 @@
  * from "this network has no events". `assertNonEmpty` in the scanner exists to
  * turn that silent failure into a loud one.
  *
- * Source: https://github.com/nervosnetwork/fiber/blob/v0.8.1/config/{testnet,mainnet}/config.yml
+ * Source: https://github.com/nervosnetwork/fiber/blob/v0.9.0-rc7/config/{testnet,mainnet}/config.yml
  */
 
-export const FNN_VERSION = 'v0.8.1' as const;
+export const FNN_VERSION = 'v0.9.0-rc7' as const;
 
 export type NetworkName = 'testnet' | 'mainnet';
 
@@ -23,7 +23,7 @@ export interface NetworkConfig {
   readonly commitmentLockCodeHash: string;
 }
 
-const NETWORKS: Record<NetworkName, NetworkConfig> = {
+export const NETWORKS: Record<NetworkName, NetworkConfig> = {
   testnet: {
     name: 'testnet',
     ckbRpcUrl: 'https://testnet.ckbapp.dev/',

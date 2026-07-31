@@ -12,7 +12,8 @@
     "stats": "node --experimental-sqlite src/bin/stats.ts",
     "replay": "node --experimental-sqlite src/bin/replay.ts",
     "ingest": "node --experimental-sqlite src/bin/ingest.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "serve": "node --experimental-sqlite src/bin/serve.ts"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

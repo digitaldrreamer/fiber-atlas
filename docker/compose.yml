@@ -121,6 +121,20 @@ services:
     command:
       - 'while true; do node src/bin/scan.ts || echo "scan pass failed; retrying"; sleep "$$SCAN_INTERVAL"; done'
 
+  # ------------------------------------------------------------------- api ---
+  # Serves every network whose database exists, side by side. Read-only: it opens
+  # the same SQLite files the scanner and ingest write, with SQLite's readOnly flag
+  # set, so a serving process cannot corrupt the archive.
+  api:
+    <<: *atlas
+    restart: unless-stopped
+    environment:
+      FIBER_ATLAS_DB_DIR: /data
+      PORT: 8080
+    ports:
+      - "${API_PORT:-8080}:8080"
+    command: ["node", "src/bin/serve.ts"]
+
   # ------------------------------------------------------- on-demand reports ---
   # `docker compose -f docker/compose.yml run --rm stats-mainnet`
   stats-testnet:

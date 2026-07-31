@@ -199,6 +199,37 @@ FIBER_NETWORK=mainnet CKB_RPC_URL=https://mainnet.ckbapp.dev/ \
 
 ---
 
+## The API
+
+```bash
+npm run serve        # http://0.0.0.0:8080, serves every network with a database
+```
+
+Read-only, zero dependencies, `node:http`. Every route is network-scoped and every response carries its `network` back:
+
+```
+GET /health
+GET /v0/{network}/summary                    channel counts, penalties, attribution coverage
+GET /v0/{network}/eras                       force-close rate per block era  <- the useful one
+GET /v0/{network}/nodes                      ranked by open channels
+GET /v0/{network}/nodes/{pubkey}             detail + channels + windowed reliability
+GET /v0/{network}/channels?status=open|closed
+GET /v0/{network}/channels/{outpoint}        detail + its on-chain events
+GET /v0/{network}/faultline/events?kind=penalty|force_close|cooperative_close
+GET /v0/{network}/faultline/penalties
+GET /v0/{network}/faultline/nodes/{pubkey}?window_blocks=200000
+```
+
+Three of the specs' normative rules are enforced by the response shapes rather than left to documentation, because documentation does not survive a client author in a hurry:
+
+- **Capacity is never presented as spendable.** The field is `capacity_shannons` and channel payloads carry an explicit `capacity_is_not_balance` note (**A+04**).
+- **Attribution never travels without its label.** Every event embeds `attribution` ∈ `node_pair` / `channel` / `unattributed`, and unattributed events are served rather than hidden (**F-02**, **F+04**).
+- **Counts are never served alone, and there is no lifetime reliability figure.** `/faultline/nodes/{pubkey}` requires a window and returns exposure-normalised rates beside the counts (**F+05**). A lifetime rate would be used, and testnet's is 42% — a number describing no period anyone operates in.
+
+The API opens the SQLite files with SQLite's read-only flag, so a serving process cannot corrupt the archive it shares with the scanner.
+
+---
+
 ## Running the whole thing with Docker
 
 Both networks run **side by side** — six services: an `fnn` gossip node, an ingest loop, and an L1 scan loop for each of testnet and mainnet.
