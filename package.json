@@ -10,6 +10,7 @@
   "scripts": {
     "scan": "node --experimental-sqlite src/bin/scan.ts",
     "stats": "node --experimental-sqlite src/bin/stats.ts",
+    "replay": "node --experimental-sqlite src/bin/replay.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

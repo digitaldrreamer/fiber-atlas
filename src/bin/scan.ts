@@ -39,7 +39,7 @@ console.log(`db        ${cfg.dbPath}`);
 console.log(`funding   ${cfg.fundingLockCodeHash}`);
 console.log(`commit    ${cfg.commitmentLockCodeHash}\n`);
 
-const scanner = new FaultlineScanner(rpc, store, cfg);
+const scanner = new FaultlineScanner(rpc, store, cfg, cfg.concurrency);
 
 const report = (p: ScanProgress) => {
   const bits = [`pages ${p.pagesDone}`, `txs ${p.txsSeen}`];

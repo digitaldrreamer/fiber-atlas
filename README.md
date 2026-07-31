@@ -130,6 +130,7 @@ Requires **Node 24+** (uses native TypeScript execution and the built-in `node:s
 npm install                 # dev-only: typescript + @types/node
 npm run scan -- --pages 4   # scan 4 pages per pass; omit --pages for a full backfill
 npm run stats               # classification breakdown
+npm run replay              # re-derive every event from the local archive, offline
 ```
 
 Configuration is via environment variables:
@@ -141,5 +142,7 @@ Configuration is via environment variables:
 | `FIBER_ATLAS_DB` | `./data/fiber-atlas.<network>.db` | |
 
 The scan is resumable: an indexer cursor is persisted per pass after each page, and all writes are idempotent, so an interrupted run re-does at most one page.
+
+**The crawl is paid once, ever.** A full history backfill is ~190,000 RPC round-trips (83,249 funding-lock + 106,841 commitment-lock transactions on testnet as of 2026-07-31). Both the raw transactions *and* the indexer's grouping are archived, so any later change to a classification rule — or any field a future phase needs that this one did not extract — is a local `npm run replay`, never another crawl. `replay` is wired to an unreachable RPC so it cannot silently fall back to the network.
 
 > **An empty scan is a configuration failure, not a quiet network.** Lock code hashes differ between testnet and mainnet, and a scanner pointed at the wrong set returns zero results indistinguishably from "nothing happened". The scanner preflights both hashes and refuses to start if either indexes nothing.

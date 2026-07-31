@@ -33,6 +33,39 @@ CREATE TABLE IF NOT EXISTS scan_cursor (
   updated_at  INTEGER NOT NULL
 );
 
+-- ---------------------------------------------------------------------------
+-- Archive: the crawl is paid once, ever.
+--
+-- Enumerating and fetching the full history is ~190k RPC round-trips against a
+-- third-party endpoint. Storing only derived fields would mean any later change to
+-- a classification rule, or any field a future phase needs and this one did not
+-- anticipate, forces the whole crawl again. So both halves of the network's answer
+-- are archived verbatim:
+--   raw_tx    — the transaction as returned
+--   scan_hit  — the indexer's grouping (io_type/io_index), which is NOT derivable
+--               from the transaction alone and would otherwise be unrecoverable
+-- Together these make re-classification a local replay. See bin/replay.ts.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS raw_tx (
+  tx_hash    TEXT PRIMARY KEY,
+  tx_json    TEXT NOT NULL,
+  fetched_at INTEGER NOT NULL
+);
+
+-- The key includes cells_json, NOT just (scan_key, tx_hash). The indexer iterates by
+-- script args, so a transaction that touches two cells with different args is
+-- returned once per args — commonly as [["output","0x0"]] and [["input","0x0"]]
+-- separately. Keying on tx_hash alone silently discards the second hit, which on
+-- testnet loses ~⅓ of commitment-lock rows and with them the penalties they carry.
+CREATE TABLE IF NOT EXISTS scan_hit (
+  scan_key     TEXT NOT NULL,
+  tx_hash      TEXT NOT NULL,
+  block_number INTEGER NOT NULL,
+  cells_json   TEXT NOT NULL,
+  PRIMARY KEY (scan_key, tx_hash, cells_json)
+);
+CREATE INDEX IF NOT EXISTS idx_scan_hit_block ON scan_hit(scan_key, block_number);
+
 -- A channel, keyed by its funding cell outpoint. This is the join key to the
 -- gossip graph (SPEC-ATLAS §2.2) and the anchor for all attribution.
 CREATE TABLE IF NOT EXISTS channel (
@@ -112,6 +145,59 @@ export class Store {
          ON CONFLICT(scan_key) DO UPDATE SET last_cursor = excluded.last_cursor, updated_at = excluded.updated_at`,
       )
       .run(key, cursor, Date.now());
+  }
+
+  getRawTx(txHash: string): string | null {
+    const row = this.db.prepare('SELECT tx_json FROM raw_tx WHERE tx_hash = ?').get(txHash) as
+      | { tx_json: string }
+      | undefined;
+    return row?.tx_json ?? null;
+  }
+
+  putRawTx(txHash: string, txJson: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO raw_tx (tx_hash, tx_json, fetched_at) VALUES (?,?,?)
+         ON CONFLICT(tx_hash) DO NOTHING`,
+      )
+      .run(txHash, txJson, Date.now());
+  }
+
+  putScanHit(scanKey: string, txHash: string, blockNumber: number, cellsJson: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO scan_hit (scan_key, tx_hash, block_number, cells_json) VALUES (?,?,?,?)
+         ON CONFLICT(scan_key, tx_hash, cells_json) DO NOTHING`,
+      )
+      .run(scanKey, txHash, blockNumber, cellsJson);
+  }
+
+  /** All archived indexer hits for a pass, in block order — the replay input. */
+  scanHits(scanKey: string): { tx_hash: string; block_number: number; cells_json: string }[] {
+    return this.db
+      .prepare(
+        'SELECT tx_hash, block_number, cells_json FROM scan_hit WHERE scan_key = ? ORDER BY block_number, tx_hash',
+      )
+      .all(scanKey) as { tx_hash: string; block_number: number; cells_json: string }[];
+  }
+
+  archiveStats(): { txs: number; hits: number; bytes: number } {
+    const r = this.db
+      .prepare(
+        `SELECT (SELECT COUNT(*) FROM raw_tx) AS txs,
+                (SELECT COUNT(*) FROM scan_hit) AS hits,
+                (SELECT COALESCE(SUM(LENGTH(tx_json)), 0) FROM raw_tx) AS bytes`,
+      )
+      .get() as { txs: number; hits: number; bytes: number };
+    return r;
+  }
+
+  /**
+   * Drop everything derived from the archive, keeping the archive itself.
+   * Replay rebuilds these from raw_tx + scan_hit with no network access.
+   */
+  resetDerived(): void {
+    this.db.exec('DELETE FROM event; DELETE FROM commitment_cell; DELETE FROM channel;');
   }
 
   upsertChannelOpen(r: {

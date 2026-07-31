@@ -40,11 +40,37 @@ export class FaultlineScanner {
   readonly #rpc: CkbRpc;
   readonly #store: Store;
   readonly #cfg: NetworkConfig;
+  readonly #concurrency: number;
 
-  constructor(rpc: CkbRpc, store: Store, cfg: NetworkConfig) {
+  constructor(rpc: CkbRpc, store: Store, cfg: NetworkConfig, concurrency = 8) {
     this.#rpc = rpc;
     this.#store = store;
     this.#cfg = cfg;
+    this.#concurrency = concurrency;
+  }
+
+  /** Scan keys, exposed so replay can address the same archived passes. */
+  scanKeys(): { funding: string; commitment: string } {
+    return {
+      funding: `${this.#cfg.name}:funding_lock`,
+      commitment: `${this.#cfg.name}:commitment_lock`,
+    };
+  }
+
+  /** Rehydrate an archived page: the indexer's grouping plus the transactions. */
+  archivedRows(scanKey: string): { rows: GroupedTx[]; txs: (Transaction | null)[] } {
+    const hits = this.#store.scanHits(scanKey);
+    const rows: GroupedTx[] = hits.map((h) => ({
+      block_number: String(h.block_number),
+      tx_hash: h.tx_hash,
+      tx_index: '0x0',
+      cells: JSON.parse(h.cells_json) as GroupedTx['cells'],
+    }));
+    const txs = rows.map((r) => {
+      const raw = this.#store.getRawTx(r.tx_hash);
+      return raw ? (JSON.parse(raw) as Transaction) : null;
+    });
+    return { rows, txs };
   }
 
   #searchKey(codeHash: string): SearchKey {
@@ -97,7 +123,25 @@ export class FaultlineScanner {
     };
 
     await this.#eachPage(scanKey, this.#cfg.fundingLockCodeHash, opts, async (rows) => {
-      const txs = await this.#fetchTxs(rows, opts);
+      const txs = await this.#fetchTxs(scanKey, rows);
+      this.processFundingRows(rows, txs, progress);
+      progress.pagesDone++;
+      opts.onProgress?.(progress);
+    });
+
+    return progress;
+  }
+
+  /**
+   * Apply funding-lock rows. Shared by the live scan and by offline replay, so a
+   * classification change can never drift between the two paths.
+   */
+  processFundingRows(
+    rows: GroupedTx[],
+    txs: (Transaction | null)[],
+    progress: ScanProgress,
+  ): void {
+    {
       this.#store.transaction(() => {
         for (const [i, row] of rows.entries()) {
           const tx = txs[i];
@@ -169,11 +213,7 @@ export class FaultlineScanner {
           }
         }
       });
-      progress.pagesDone++;
-      opts.onProgress?.(progress);
-    });
-
-    return progress;
+    }
   }
 
   /** Pass 2: penalties and settlements against commitment cells. */
@@ -191,7 +231,22 @@ export class FaultlineScanner {
     };
 
     await this.#eachPage(scanKey, this.#cfg.commitmentLockCodeHash, opts, async (rows) => {
-      const txs = await this.#fetchTxs(rows, opts);
+      const txs = await this.#fetchTxs(scanKey, rows);
+      this.processCommitmentRows(rows, txs, progress);
+      progress.pagesDone++;
+      opts.onProgress?.(progress);
+    });
+
+    return progress;
+  }
+
+  /** Apply commitment-lock rows. Shared by the live scan and by offline replay. */
+  processCommitmentRows(
+    rows: GroupedTx[],
+    txs: (Transaction | null)[],
+    progress: ScanProgress,
+  ): void {
+    {
       this.#store.transaction(() => {
         for (const [i, row] of rows.entries()) {
           const tx = txs[i];
@@ -258,11 +313,7 @@ export class FaultlineScanner {
           }
         }
       });
-      progress.pagesDone++;
-      opts.onProgress?.(progress);
-    });
-
-    return progress;
+    }
   }
 
   /** Paginate `get_transactions` in ascending order, persisting the cursor per page. */
@@ -298,8 +349,36 @@ export class FaultlineScanner {
     }
   }
 
-  #fetchTxs(rows: GroupedTx[], opts: ScanOptions): Promise<(Transaction | null)[]> {
-    void opts;
-    return mapPool(rows, 8, (row) => this.#rpc.getTransaction(row.tx_hash));
+  /**
+   * Resolve transactions for a page, archiving both the indexer's grouping and each
+   * transaction so the crawl never has to be repeated.
+   *
+   * The archive is consulted first, which also makes an interrupted backfill cheap to
+   * resume: already-fetched transactions cost a local read, not a round-trip.
+   */
+  async #fetchTxs(scanKey: string, rows: GroupedTx[]): Promise<(Transaction | null)[]> {
+    this.#store.transaction(() => {
+      for (const row of rows) {
+        this.#store.putScanHit(scanKey, row.tx_hash, Number(row.block_number), JSON.stringify(row.cells));
+      }
+    });
+
+    const cached = rows.map((row) => this.#store.getRawTx(row.tx_hash));
+    const fetched = await mapPool(rows, this.#concurrency, async (row, i) => {
+      if (cached[i]) return null;
+      return this.#rpc.getTransaction(row.tx_hash);
+    });
+
+    this.#store.transaction(() => {
+      for (const [i, tx] of fetched.entries()) {
+        if (tx) this.#store.putRawTx(rows[i]!.tx_hash, JSON.stringify(tx));
+      }
+    });
+
+    return rows.map((_, i) => {
+      const hit = cached[i];
+      if (hit) return JSON.parse(hit) as Transaction;
+      return fetched[i] ?? null;
+    });
   }
 }
