@@ -74,7 +74,9 @@ Two independent populations are permanently unattributable to a node pair, and b
 > - `gossip → L1` — does every announced channel have a funding cell? Converges to ~100%; an integrity check on the join itself (**A+05**).
 > - `L1 → gossip` — can a detected event be tied to a node pair? Bounded by the public/private ratio and by observation start. **This is the honest coverage figure.**
 >
-> Reporting only the first would overstate coverage by more than an order of magnitude. On testnet the two read 60.3% and 2.2% respectively.
+> Reporting only the first would overstate coverage by more than an order of magnitude. On testnet the two read 100.0% and 2.2% respectively.
+>
+> Neither is the coverage figure a consumer acts on. Both are ratios over the *channel* population; what matters is the share of **events** that name a node pair, which is lower again — 0.39% across the full backfill. See §3.1.
 
 Detection coverage is unaffected: every close and penalty is found on L1 regardless of whether the channel was public. The limit is attribution, not detection — an unattributed penalty is still a real, verifiable, on-chain event.
 
@@ -88,7 +90,24 @@ Attribution quality differs by event and MUST be labeled:
 - **Side-level for force-close (medium):** which of the two nodes broadcast the commitment can sometimes be inferred from the commitment output structure / which delayed branch is present. Report only when derivable; otherwise attribute to the channel.
 - **Cheater-level for penalty (medium):** the penalized party is whoever's revoked commitment was swept. The `commitment-lock` args carry per-channel derived key hashes (`local_delay_pubkey_hash`, `revocation_pubkey_hash`), **not** the node's gossip `pubkey` directly, so mapping the swept party to a specific `pubkey` is a best-effort heuristic (e.g. correlating with the funding parties and channel role). Report a confidence level with every penalty attribution.
 
-> Normative: Faultline MUST NOT present a heuristic attribution as certain. Each record carries `attribution_confidence ∈ {channel, side, node}` and the evidence used.
+> Normative: Faultline MUST NOT present a heuristic attribution as certain. Each record carries an attribution level and the evidence used.
+
+### 3.1 Attribution is derived, never stored
+
+The level is computed at read time (`event_attributed`, `src/db.ts`), on three values:
+
+| Level | Meaning | Supports a per-node claim? |
+|-------|---------|---------------------------|
+| `node_pair` | Outpoint known **and** the channel is in the gossip graph | Yes — this is the published coverage figure |
+| `channel` | Outpoint known, channel absent from gossip | No. A real, verifiable event that names no node |
+| `unattributed` | No outpoint at all | No. Quarantined, never dropped (**F+04**) |
+
+Two mistakes are ruled out by construction:
+
+1. **Knowing the channel is not knowing the nodes.** An implementation that grades on `channel_outpoint IS NOT NULL` reports channel identification as attribution. Measured on testnet, that reads 70% where the honest figure is **0.39%** — a 175× overstatement of exactly the kind §2.3 forbids.
+2. **Attribution cannot be frozen at insert.** Gossip membership is not fixed: a channel absent today becomes attributable the moment it is observed while still open. A stored value can only decay away from the truth, so the level MUST be derived on read.
+
+Consequently the published coverage figure **rises with observation time and starts near zero.** It is a property of how long Faultline has been watching, not of the backfill's size — which is why a complete 8.6M-block history still yields 0.39%.
 
 ---
 
@@ -103,6 +122,32 @@ Faultline serves **weighted evidence, not verdicts.** The weighting is deliberat
 5. **Not-guilt disclaimer is normative:** a force-close is *evidence*, not proof of unreliability. UI and API copy MUST frame force-closes as a signal a consumer weighs, not a conviction.
 
 The output is a per-node reliability profile: counts and rates per event class, attribution confidences, and a recency-weighted summary — with the raw events always available so consumers can apply their own weighting.
+
+### 4.1 Why recency weighting is not optional — measured
+
+Rule 4 above is normally argued on principle. On Fiber testnet it is forced by the data: **the aggregate force-close rate is not a property of the protocol, it is an artifact of one era.**
+
+Full L1 backfill of the `FundingLock` script, blocks 13,307,533 – 21,925,528 (2024-05-20 → 2026-07-31), 44,133 channels, 39,116 closes:
+
+| Block era | Dates | Closes | Force-close |
+|-----------|-------|--------|-------------|
+| 13M – 17M | 2024-05 → 2025-08 | 1,760 | 6 – 17% |
+| **18M** | 2025-08 → 2025-10 | 11,372 | **33.0%** |
+| **19M** | 2025-10 → 2026-01 | 19,539 | **63.9%** |
+| 20M | 2026-01 → 2026-04 | 4,797 | 0.5% |
+| 21M | 2026-04 → 2026-07 | 1,648 | 2.1% |
+
+Testnet sustained an elevated force-close regime for roughly **five and a half months (2025-08-06 → 2026-01-24)**, peaking at 92% in the 19.4M block window, then returning to a 0.5–2% baseline. Penalties track the same curve and then stop: 1,392 in the 18M era, 405 in 19M, ~0 since.
+
+The consequences are normative:
+
+- **The lifetime aggregate is misleading.** "42% of Fiber channels force-close" is arithmetically true over all history and describes no period anyone is operating in. A feed that reports lifetime rates would permanently condemn every node that was online in late 2025.
+- **A reliability score MUST be windowed,** and the window MUST be stated with the figure. Faultline reports rates per era, never a single lifetime number.
+- **Regime changes are themselves the signal.** The most useful output here is not any node's score but the fact that a network-wide failure regime began, persisted, and ended — visible only because the events are on-chain and the history is complete.
+
+> Attribution note: essentially none of the 18M–19M events carry a node pair, since those channels closed years before any observer synced gossip (§2.3). The era finding is a **detection** result, and detection is complete regardless of attribution. This is the clearest demonstration that the two capabilities are worth separating.
+
+Provenance: `src/bin/stats.ts` over `data/fiber-atlas.testnet.db`, funding scan complete. Penalty counts were taken while the `CommitmentLock` scan was still in progress and are lower bounds; the era *shape* is stable but absolute penalty totals will rise.
 
 ---
 
