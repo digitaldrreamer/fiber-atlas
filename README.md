@@ -41,7 +41,7 @@ Grounded in what Fiber's RPC and CKB L1 genuinely expose (see [`specs/`](./specs
 
 ### Atlas (visibility)
 - **Topology** — every node and channel in the network, from `graph_nodes` / `graph_channels` gossip RPC.
-- **Capacity & policy** — per-channel capacity, fee rates, min/max HTLC, and `enabled`/`disabled` state from `ChannelUpdate` info.
+- **Capacity & policy** — per-channel capacity, fee rates, minimum TLC value, TLC expiry delta, and `enabled`/`disabled` state, per direction, from `ChannelUpdateInfo`.
 - **Liveness / staleness** — how fresh each channel's last update is, as a soft "is this path plausibly alive" signal.
 
 ### Faultline (on-chain reliability)
@@ -88,6 +88,14 @@ These are hard limits of the available data, not TODOs:
 ```
 
 The **join on `channel_outpoint`** is the core idea: the gossip graph knows *which two nodes* a channel belongs to; CKB L1 knows *what happened to it*. Neither alone is enough; together they produce attributed, unforgeable reliability records.
+
+The two ingest paths are **independent**, not a pipeline. L1 scanning finds closes and penalties network-wide on its own; the gossip graph is what attributes them to nodes. Faultline therefore degrades gracefully — an event whose channel is unknown to the graph is quarantined and reported as unattributed, never dropped.
+
+### Running it requires your own Fiber node
+
+Fiber's RPC binds to `127.0.0.1:8227` by default and **refuses to start on a public interface** without authentication configured, so there is no public gossip endpoint to point at — by design, since that RPC controls funds. Anyone self-hosting Fiber Atlas runs an `fnn` instance alongside it.
+
+This is cheaper than it sounds: the Fiber node needs **no local CKB chain sync** (it uses a remote CKB RPC), and prebuilt binaries are published. The CKB L1 side needs no node at all — the public CKB RPC exposes the indexer that Faultline scans.
 
 ---
 

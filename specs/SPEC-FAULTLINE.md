@@ -1,7 +1,8 @@
 # SPEC-FAULTLINE: On-Chain Reliability Feed
 
 Status: **Draft**
-Version: **0.1.0**
+Version: **0.2.0**
+Verified against: **fnn v0.8.1**, CKB testnet (2026-07-31)
 Part of: [Fiber Atlas](../README.md)
 Companion: [`SPEC-ATLAS.md`](./SPEC-ATLAS.md)
 
@@ -36,11 +37,33 @@ A Fiber channel is opened by a funding transaction that creates a cell locked by
 | **Force-close** | Funding cell spent; one or more outputs carry `commitment-lock` (delay/revocation structure) | Mild negative — unilateral close; often a peer that went offline | The channel; the *closing* side where distinguishable |
 | **Penalty** | A `commitment-lock` cell is later spent via its **revocation branch** (`unlock_count == 0x00`, Schnorr sig over `revocation_pubkey_hash`) | Strong negative — a party broadcast a **revoked** state and was swept | The **penalized** party (the cheater) where identifiable; else the channel |
 
-Detection primitives:
+### 2.1 Script identities
 
-- **Close detection:** watch for spends of cells at each known `channel_outpoint` (funding cells). A CKB indexer / `get_transactions` on the funding outpoints, or a scan filtered by the `funding-lock` code hash.
-- **Force-close detection:** inspect the closing transaction's outputs for the `commitment-lock` code hash.
-- **Penalty detection:** watch for spends of `commitment-lock` cells whose unlock witness selects the revocation branch (`unlock_count == 0x00`). Fiber's `commitment-lock` uses this selector; see `nervosnetwork/fiber-scripts`.
+Detection keys off two lock scripts. These code hashes are **network-specific** and are read from the `fiber.scripts` section of the fnn config actually being run — never hardcoded across networks.
+
+| Script | CKB testnet `code_hash` (`hash_type: type`) |
+|--------|---------------------------------------------|
+| `FundingLock` | `0x6c67887fe201ee0c7853f1682c0b77c0e6214044c156c7558269390a8afa6d7c` |
+| `CommitmentLock` | `0x740dee83f87c6f309824d8fd3fbdd3c8380ee6fc9acc90b1a748438afcdf81d8` |
+
+Source: [`config/testnet/config.yml` @ v0.8.1](https://github.com/nervosnetwork/fiber/blob/v0.8.1/config/testnet/config.yml), which in turn references the [fiber-scripts testnet deployment migration](https://github.com/nervosnetwork/fiber-scripts/blob/main/deployment/testnet/migrations/2025-02-28-111246.json). Mainnet values live in `config/mainnet/config.yml` and **differ**; a scanner pointed at the wrong network's hashes silently returns nothing, which is indistinguishable from "no events." Treat an empty scan as a configuration failure until proven otherwise.
+
+### 2.2 Detection primitives
+
+- **Close detection:** watch for spends of cells at each known `channel_outpoint` (funding cells) — `get_transactions` on the funding outpoints, or a scan filtered by the `FundingLock` code hash.
+- **Force-close detection:** inspect the closing transaction's outputs for the `CommitmentLock` code hash.
+- **Penalty detection:** watch for spends of `CommitmentLock` cells whose unlock witness selects the revocation branch (`unlock_count == 0x00`). Fiber's `commitment-lock` uses this selector; see `nervosnetwork/fiber-scripts`.
+
+### 2.3 Detection is independent of the gossip graph
+
+**Scanning L1 by `CommitmentLock` code hash discovers force-closes network-wide without any Fiber node running.** The gossip graph is required to *attribute* an event to `{node1, node2}` (§3) — not to *find* it. This is why Faultline is not downstream of Atlas: the two ingest paths are independent, and joined afterward on `channel_outpoint`.
+
+The practical consequence is that Faultline has a data source available immediately and in abundance. Verified against the public CKB testnet RPC (`https://testnet.ckbapp.dev/`, indexer enabled, no auth) on 2026-07-31: `get_cells` and `get_transactions` on both lock hashes each returned **more than 1000 results** — open channels, in-flight force-close outputs, and historical transactions alike, every query hitting the 1000-row page cap.
+
+Two consequences worth stating plainly:
+
+- There is **no need to seed synthetic force-closes** for testing or demonstration. Real events exist in volume.
+- Any event whose `channel_outpoint` is absent from the graph is **quarantined, never discarded** (**F+04**). Channels that closed before our node first synced gossip are permanently unattributable, and that population is not negligible. The **join hit rate is therefore a first-class published metric**, not an implementation detail: it bounds Faultline's real coverage, and hiding it would overstate what the feed knows.
 
 ---
 
@@ -50,7 +73,7 @@ Attribution quality differs by event and MUST be labeled:
 
 - **Channel-level (high confidence):** every close is attributable to the pair `{node1, node2}` via the `channel_outpoint` join. Always available.
 - **Side-level for force-close (medium):** which of the two nodes broadcast the commitment can sometimes be inferred from the commitment output structure / which delayed branch is present. Report only when derivable; otherwise attribute to the channel.
-- **Cheater-level for penalty (medium):** the penalized party is whoever's revoked commitment was swept. The `commitment-lock` args carry per-channel derived key hashes (`local_delay_pubkey_hash`, `revocation_pubkey_hash`), **not** the node's gossip `node_id` directly, so mapping the swept party to a specific `node_id` is a best-effort heuristic (e.g. correlating with the funding parties and channel role). Report a confidence level with every penalty attribution.
+- **Cheater-level for penalty (medium):** the penalized party is whoever's revoked commitment was swept. The `commitment-lock` args carry per-channel derived key hashes (`local_delay_pubkey_hash`, `revocation_pubkey_hash`), **not** the node's gossip `pubkey` directly, so mapping the swept party to a specific `pubkey` is a best-effort heuristic (e.g. correlating with the funding parties and channel role). Report a confidence level with every penalty attribution.
 
 > Normative: Faultline MUST NOT present a heuristic attribution as certain. Each record carries `attribution_confidence ∈ {channel, side, node}` and the evidence used.
 
@@ -85,7 +108,7 @@ On-chain closes and penalties are the one signal that is (a) network-wide observ
 ## 6. API Surface (v0)
 
 ```
-GET /faultline/nodes/:node_id     → { cooperative, force_closes, penalties,
+GET /faultline/nodes/:pubkey      → { cooperative, force_closes, penalties,
                                        rates, recency_weighted_score,
                                        attribution_confidence_breakdown }
 GET /faultline/channels/:outpoint → close event + classification + attribution + evidence
