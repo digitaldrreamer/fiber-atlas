@@ -5,3 +5,6 @@ data/
 *.db-shm
 .env
 .env.local
+
+# local Fiber node: binary, KEYS, chain state — never commit
+.fnn/

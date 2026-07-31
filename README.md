@@ -120,6 +120,19 @@ TBD before first release.
 
 ---
 
+## Running the Atlas gossip ingest
+
+Requires a local `fnn` node synced to gossip (see above — there is no public Fiber RPC to point at).
+
+```bash
+npm run ingest              # one pass
+npm run ingest -- --watch   # poll continuously (default every 60s)
+```
+
+`FIBER_RPC_URL` defaults to `http://127.0.0.1:8227`.
+
+Each pass reports the **join rate** against L1: what fraction of gossip channels have a funding cell the Faultline scanner has seen. That is acceptance test A+05, and it is reported every run rather than assumed, because the two sources spell `channel_outpoint` differently — Fiber packs it as 36 bytes (`tx_hash ‖ index-LE`), CKB returns `{tx_hash, index}`. Comparing them naively yields a 0% join that looks like "gossip has never heard of these channels" rather than a formatting bug. Normalisation lives in `src/ckb/outpoint.ts`.
+
 ## Running the Faultline scanner
 
 Phase 1 is implemented: the L1 scanner detects and classifies channel closes, force-closes, and penalties directly from CKB L1. **No Fiber node is required for this** — detection is independent of the gossip graph (see [`SPEC-FAULTLINE.md`](./specs/SPEC-FAULTLINE.md) §2.3).

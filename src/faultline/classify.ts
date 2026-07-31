@@ -96,11 +96,4 @@ export function classifyCommitmentSpend(
   };
 }
 
-export function outPointKey(txHash: string, index: number): string {
-  return `${txHash}:${index}`;
-}
-
-export function parseOutPointKey(key: string): { txHash: string; index: number } {
-  const at = key.lastIndexOf(':');
-  return { txHash: key.slice(0, at), index: Number(key.slice(at + 1)) };
-}
+export { outPointKey, parseOutPointKey } from '../ckb/outpoint.ts';

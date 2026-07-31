@@ -11,6 +11,7 @@
     "scan": "node --experimental-sqlite src/bin/scan.ts",
     "stats": "node --experimental-sqlite src/bin/stats.ts",
     "replay": "node --experimental-sqlite src/bin/replay.ts",
+    "ingest": "node --experimental-sqlite src/bin/ingest.ts",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

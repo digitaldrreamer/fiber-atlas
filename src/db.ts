@@ -116,6 +116,49 @@ CREATE TABLE IF NOT EXISTS event (
 );
 CREATE INDEX IF NOT EXISTS idx_event_block ON event(block_number);
 CREATE INDEX IF NOT EXISTS idx_event_kind ON event(kind);
+
+-- ---------------------------------------------------------------------------
+-- Atlas: the gossip graph (SPEC-ATLAS §3).
+-- ---------------------------------------------------------------------------
+
+-- Keyed on pubkey, matching fnn v0.8.0+ exactly. See SPEC-ATLAS §2.1 on why no
+-- local alias is introduced.
+CREATE TABLE IF NOT EXISTS node (
+  pubkey              TEXT PRIMARY KEY,
+  node_name           TEXT,
+  version             TEXT,
+  addresses_json      TEXT,
+  features_json       TEXT,
+  chain_hash          TEXT,
+  auto_accept_min_ckb TEXT,
+  udt_cfg_json        TEXT,
+  last_announced      INTEGER,
+  first_seen          INTEGER NOT NULL,
+  last_seen           INTEGER NOT NULL
+);
+
+-- Per-direction ChannelUpdateInfo. A direction absent from gossip has NO ROW here,
+-- which is distinct from a row with enabled = 0 (SPEC-ATLAS §3): absence is "unknown",
+-- enabled = 0 is a positive statement that the direction is unusable.
+CREATE TABLE IF NOT EXISTS channel_update (
+  channel_outpoint  TEXT NOT NULL,
+  direction         INTEGER NOT NULL CHECK (direction IN (1,2)),
+  timestamp         INTEGER,
+  enabled           INTEGER,
+  fee_rate          TEXT,
+  tlc_minimum_value TEXT,
+  tlc_expiry_delta  TEXT,
+  last_seen         INTEGER NOT NULL,
+  PRIMARY KEY (channel_outpoint, direction)
+);
+
+-- Cursor/health for the gossip ingest loop.
+CREATE TABLE IF NOT EXISTS gossip_sync (
+  id             INTEGER PRIMARY KEY CHECK (id = 1),
+  last_run_at    INTEGER,
+  nodes_seen     INTEGER,
+  channels_seen  INTEGER
+);
 `;
 
 export class Store {
@@ -124,7 +167,44 @@ export class Store {
   constructor(path: string) {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
     this.db = new DatabaseSync(path);
+    // The L1 backfill and the gossip ingest are separate processes writing the same
+    // file. WAL allows one writer at a time; without a busy timeout the loser of a
+    // race fails instead of waiting.
+    this.db.exec('PRAGMA busy_timeout = 30000;');
     this.db.exec(SCHEMA);
+    this.#migrate();
+  }
+
+  /**
+   * Additive column migrations.
+   *
+   * `CREATE TABLE IF NOT EXISTS` will not add columns to an existing table, and the
+   * L1 archive is expensive enough that dropping and rebuilding is not an option.
+   * Gossip fields are therefore added in place, idempotently.
+   */
+  #migrate(): void {
+    const cols = (table: string) =>
+      new Set(
+        (this.db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map(
+          (r) => r.name,
+        ),
+      );
+
+    const channelCols = cols('channel');
+    const additions: [string, string][] = [
+      ['node1_pubkey', 'TEXT'],
+      ['node2_pubkey', 'TEXT'],
+      ['gossip_capacity', 'TEXT'],
+      ['gossip_udt_type_script', 'TEXT'],
+      ['created_timestamp', 'INTEGER'],
+      ['gossip_first_seen', 'INTEGER'],
+      ['gossip_last_seen', 'INTEGER'],
+    ];
+    for (const [name, type] of additions) {
+      if (!channelCols.has(name)) {
+        this.db.exec(`ALTER TABLE channel ADD COLUMN ${name} ${type}`);
+      }
+    }
   }
 
   close(): void {
@@ -198,6 +278,100 @@ export class Store {
    */
   resetDerived(): void {
     this.db.exec('DELETE FROM event; DELETE FROM commitment_cell; DELETE FROM channel;');
+  }
+
+  upsertNode(n: {
+    pubkey: string;
+    node_name: string;
+    version: string;
+    addresses_json: string;
+    features_json: string;
+    chain_hash: string;
+    auto_accept_min_ckb: string;
+    udt_cfg_json: string;
+    last_announced: number;
+  }): void {
+    const now = Date.now();
+    this.db
+      .prepare(
+        `INSERT INTO node (pubkey, node_name, version, addresses_json, features_json, chain_hash,
+                           auto_accept_min_ckb, udt_cfg_json, last_announced, first_seen, last_seen)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?)
+         ON CONFLICT(pubkey) DO UPDATE SET
+           node_name = excluded.node_name, version = excluded.version,
+           addresses_json = excluded.addresses_json, features_json = excluded.features_json,
+           chain_hash = excluded.chain_hash, auto_accept_min_ckb = excluded.auto_accept_min_ckb,
+           udt_cfg_json = excluded.udt_cfg_json, last_announced = excluded.last_announced,
+           last_seen = excluded.last_seen`,
+      )
+      .run(n.pubkey, n.node_name, n.version, n.addresses_json, n.features_json, n.chain_hash,
+           n.auto_accept_min_ckb, n.udt_cfg_json, n.last_announced, now, now);
+  }
+
+  /**
+   * Merge gossip facts into the channel row keyed by the SAME canonical
+   * channel_outpoint the L1 scanner uses. This is the join (SPEC-ATLAS §2.2).
+   */
+  upsertChannelGossip(c: {
+    channel_outpoint: string;
+    node1_pubkey: string;
+    node2_pubkey: string;
+    gossip_capacity: string;
+    gossip_udt_type_script: string | null;
+    created_timestamp: number;
+  }): void {
+    const now = Date.now();
+    this.db
+      .prepare(
+        `INSERT INTO channel (channel_outpoint, node1_pubkey, node2_pubkey, gossip_capacity,
+                              gossip_udt_type_script, created_timestamp,
+                              gossip_first_seen, gossip_last_seen, first_seen, last_seen)
+         VALUES (?,?,?,?,?,?,?,?,?,?)
+         ON CONFLICT(channel_outpoint) DO UPDATE SET
+           node1_pubkey = excluded.node1_pubkey,
+           node2_pubkey = excluded.node2_pubkey,
+           gossip_capacity = excluded.gossip_capacity,
+           gossip_udt_type_script = excluded.gossip_udt_type_script,
+           created_timestamp = excluded.created_timestamp,
+           gossip_first_seen = COALESCE(channel.gossip_first_seen, excluded.gossip_first_seen),
+           gossip_last_seen = excluded.gossip_last_seen,
+           last_seen = excluded.last_seen`,
+      )
+      .run(c.channel_outpoint, c.node1_pubkey, c.node2_pubkey, c.gossip_capacity,
+           c.gossip_udt_type_script, c.created_timestamp, now, now, now, now);
+  }
+
+  upsertChannelUpdate(u: {
+    channel_outpoint: string;
+    direction: 1 | 2;
+    timestamp: number;
+    enabled: number;
+    fee_rate: string;
+    tlc_minimum_value: string;
+    tlc_expiry_delta: string;
+  }): void {
+    this.db
+      .prepare(
+        `INSERT INTO channel_update (channel_outpoint, direction, timestamp, enabled, fee_rate,
+                                     tlc_minimum_value, tlc_expiry_delta, last_seen)
+         VALUES (?,?,?,?,?,?,?,?)
+         ON CONFLICT(channel_outpoint, direction) DO UPDATE SET
+           timestamp = excluded.timestamp, enabled = excluded.enabled,
+           fee_rate = excluded.fee_rate, tlc_minimum_value = excluded.tlc_minimum_value,
+           tlc_expiry_delta = excluded.tlc_expiry_delta, last_seen = excluded.last_seen`,
+      )
+      .run(u.channel_outpoint, u.direction, u.timestamp, u.enabled, u.fee_rate,
+           u.tlc_minimum_value, u.tlc_expiry_delta, Date.now());
+  }
+
+  recordGossipSync(nodes: number, channels: number): void {
+    this.db
+      .prepare(
+        `INSERT INTO gossip_sync (id, last_run_at, nodes_seen, channels_seen) VALUES (1,?,?,?)
+         ON CONFLICT(id) DO UPDATE SET last_run_at = excluded.last_run_at,
+           nodes_seen = excluded.nodes_seen, channels_seen = excluded.channels_seen`,
+      )
+      .run(Date.now(), nodes, channels);
   }
 
   upsertChannelOpen(r: {
