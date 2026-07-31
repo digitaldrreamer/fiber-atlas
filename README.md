@@ -9,7 +9,7 @@ It has two parts:
 - **Atlas** — a network-wide view of *every* node and channel — capacity, fee policy, and liveness — built from the gossip graph. You run one node to observe them all; it is **not** a dashboard for the single node you operate.
 - **Faultline** — an on-chain reliability feed. It watches CKB L1 for channel closes and penalty spends, attributes them back to nodes via the gossip graph, and surfaces an **unforgeable** record of who force-closed and who got penalized.
 
-**Two things set Fiber Atlas apart from single-node operability tools:** it is *network-wide* — every node from the gossip graph, not a cockpit for the one node you run — and it is *on-chain* — reliability grounded in verifiable CKB L1 events, not self-reported metrics. A node cockpit answers *"is my node healthy?"*; Fiber Atlas answers *"which of the other nodes can I trust?"*
+A node cockpit answers *"is my node healthy?"* Fiber Atlas answers *"which of the other nodes can I trust?"* — and grounds the answer in verifiable CKB L1 events rather than self-reported metrics. See [Prior art](#prior-art-and-what-is-actually-different) for how this differs from the Fiber section of CKB Explorer, which already exists.
 
 > Built for the **[Gone in 60ms — Fiber Network Infrastructure Hackathon](https://talk.nervos.org/t/gone-in-60ms-fiber-network-infrastructure-hackathon-announcement/10418)** (July 1–15, 2026). Category 3 (Merchant, Liquidity, LSP, Multi-Asset Infrastructure) with strong overlap into Category 2 (Node, Routing, Diagnostics Infrastructure).
 
@@ -32,6 +32,30 @@ Fiber Atlas fills that gap as a **shared, verifiable data plane** that many role
 | **Downstream builders** | Build dashboards, alerting, SLA products, and bonded-LSP layers on the API |
 
 Crucially, every one of these consumers is asking about *other* nodes, not itself — which is why Atlas is network-scoped rather than a per-node operability tool. It never holds user funds or moves value, and it never acts on the network (no rebalancing, no payments). It observes and serves derived signal — the canonical infrastructure shape (block explorers, graph indexers, liveness feeds all live here).
+
+---
+
+## Prior art, and what is actually different
+
+**A network-wide Fiber explorer already exists.** CKB Explorer has a Fiber section — `explorer.nervos.org/fiber/graph` — built by Magickbase, with node lists, channel lists, capacity and fee-rate statistics, and a node world map. Anyone evaluating this project will find it, so it is named here rather than left for them to discover.
+
+It covers roughly the same ground as the Atlas half of this project. Three things separate them.
+
+**1. Faultline has no counterpart.** Neither the CKB Explorer Fiber routes nor Magickbase's standalone `fiber-explorer` has any concept of close classification, force-close, penalty, or reliability. This is not a novel idea — mempool.space has classified Lightning closes as mutual / force / force-with-penalty for years, and it is standard-of-care for a mature payment-channel explorer. It is simply absent from Fiber. That gap, not the idea, is the contribution.
+
+**2. The incumbent's mainnet instance is empty.** Checked 2026-07-31 19:59 UTC:
+
+| | CKB Explorer API | Fiber Atlas |
+|---|---|---|
+| mainnet nodes | **0** | 6 |
+| mainnet channels | **0** | 247 ever, 35 open |
+| testnet channels | 12 | 44,153 ever, 5,037 open, 729 announced |
+
+`mainnet-api.explorer.nervos.org/api/v2/fiber/graph_nodes` returns `{"fiber_graph_nodes":[],"meta":{"total":0}}`. The mainnet channels this project found on L1 demonstrably exist. Verify with the URL above before relying on this comparison — if the indexer is repaired, this row stops being true and the argument rests on Faultline alone.
+
+**3. It refuses to display what it cannot know.** The CKB Explorer channel page advertises `Balance (Local/Remote)` and `TLC Balance (Offered/Received)`. Fiber does not gossip those for third-party channels: `ChannelUpdateInfo.outbound_liquidity` is populated only for channels the querying node is itself a party to, and is `None` for every channel reconstructed from gossip. This project forbids such fields by spec ([SPEC-ATLAS §5.1](./specs/SPEC-ATLAS.md), A+04) and serves `capacity_shannons` with an explicit note that it is not a balance.
+
+The same discipline applies internally: node-level reliability covers 1 force-close and 0 penalties across the entire archive, so `/faultline/nodes/{pubkey}` returns `observed: false` with null counts rather than a zero that would read as a clean record.
 
 ---
 
@@ -66,7 +90,17 @@ The full L1 history of both networks has been scanned. These numbers are not pub
 
 Mainnet Fiber has never had a penalty: in seventeen months, no party has broadcast a revoked commitment and been swept. That absence is the kind of claim only a complete on-chain scan can establish, and it is unforgeable.
 
-**Testnet tells the opposite story, and that is the point.** Across 44,133 channels its aggregate force-close rate is 42.1% — but that figure describes no period anyone operates in. It is concentrated in a single era, blocks 18.1M–19.9M (2025-08 → 2026-01), peaking at 92%, with a 0.5–2% baseline either side. Penalties follow the same curve and stop after it.
+**Testnet tells the opposite story, and that is the point.** Across 44,153 channels its aggregate force-close rate is 42.1% — but that figure describes no period anyone operates in. Every close block now carries a chain-header timestamp, so the eras can be dated rather than estimated:
+
+| Era (close block) | Closes | Force-close | Dated from headers |
+|---|---|---|---|
+| 17M | 703 | 14.9% | 2025-04-27 → 2025-07-28 |
+| **18M** | 11,372 | **33.0%** | 2025-07-29 → 2025-10-30 |
+| **19M** | 19,539 | **63.9%** | 2025-10-31 → 2026-02-02 |
+| 20M | 4,797 | 0.5% | 2026-02-02 → 2026-05-06 |
+| 21M | 1,648 | 2.1% | 2026-05-06 → 2026-07-31 |
+
+The failure is concentrated in 2025-07 → 2026-02 and collapses by two orders of magnitude afterwards. Penalties follow the same curve and stop after it.
 
 Two rules follow, and both are normative in the spec: **every published figure names its network**, and **reliability rates are windowed**, never lifetime aggregates. A lifetime number would permanently condemn every node that was online in late 2025. See [`SPEC-FAULTLINE.md`](./specs/SPEC-FAULTLINE.md) §4.1–§4.2.
 
