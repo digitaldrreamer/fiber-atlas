@@ -143,6 +143,24 @@ Full L1 backfill of the `FundingLock` script, blocks 13,307,533 – 21,925,528 (
 
 Testnet sustained an elevated force-close regime for roughly **five and a half months (2025-08-06 → 2026-01-24)**, peaking at 92% in the 19.4M block window, then returning to a 0.5–2% baseline. Penalties track the same curve and then stop: 1,392 in the 18M era, 405 in 19M, ~0 since.
 
+#### What ended it
+
+The recovery is not gradual drift. Force-close rate by ~20k-block window, dated:
+
+| Date | Closes | Force-close |
+|------|--------|-------------|
+| 2026-01-20 | 83 | 76% |
+| 2026-01-22 | 54 | 43% |
+| 2026-01-24 | 38 | 18% |
+| 2026-01-26 | 34 | 9% |
+| **2026-01-28** | 27 | **0%** |
+
+A monotonic collapse from 76% to zero across eight days. [`fnn` v0.6.1](https://github.com/nervosnetwork/fiber/releases/tag/v0.6.1) was published **2026-01-14**, six days before it begins, and its changelog contains directly relevant fixes — [#1020 "Check channel onchain settlement after uncooperative closed"](https://github.com/nervosnetwork/fiber/pull/1020) and [#1006 "fix: watchtower should mark settled tlc"](https://github.com/nervosnetwork/fiber/pull/1006). The eight-day taper is the shape staggered operator upgrades produce, not the step a single switch would.
+
+> **This is correlation with a named mechanism, not demonstrated causation.** Establishing cause requires showing the force-closing nodes ran pre-0.6.1, and that cannot be recovered retroactively: gossip carries only each node's *current* version, so historical version-per-node is gone.
+>
+> It is recoverable **going forward**. Atlas persists `node.version` on every ingest (SPEC-ATLAS §3), so the next regime change can be attributed to a release with evidence rather than adjacency. Recording versions continuously is what converts the next such finding from suggestive to provable — an argument for uninterrupted observation independent of the attribution-coverage one in §3.1.
+
 The consequences are normative:
 
 - **The lifetime aggregate is misleading.** "42% of Fiber channels force-close" is arithmetically true over all history and describes no period anyone is operating in. A feed that reports lifetime rates would permanently condemn every node that was online in late 2025.
