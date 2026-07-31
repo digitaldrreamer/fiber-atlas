@@ -125,10 +125,21 @@ No dates. Each phase ends at a verifiable state, and phases 1 and 2 are genuinel
 - [ ] Backfill the full testnet history; report the real class distribution. This is the first genuinely novel output — nobody currently knows what it looks like.
 - [ ] Events land unattributed at this stage. That is expected, not a gap (**F+04** quarantine).
 
-### Phase 2 — Atlas ingest (parallel with Phase 1)
-- [ ] Stand up `fnn` v0.8.1 on testnet against the public CKB RPC; confirm gossip sync.
-- [ ] `graph_nodes` + `graph_channels` ingest → SQLite, cursor pagination, `first_seen` / `last_seen` (**A+01**).
+### Phase 2 — Atlas ingest (parallel with Phase 1) — *in progress*
+- [x] Stand up `fnn` v0.8.1 on testnet against the public CKB RPC; gossip sync confirmed.
+      Runs **observe-only**: `announce_listening_addr: false`, no channels, no funds.
+      Announcing would inject a non-routable phantom node into the graph Atlas measures.
+- [x] `graph_nodes` + `graph_channels` ingest → SQLite, cursor pagination, `first_seen` / `last_seen`.
+- [x] Outpoint normalisation (`src/ckb/outpoint.ts`) — Fiber packs `channel_outpoint` as
+      36 bytes (`tx_hash ‖ index-LE`), CKB returns `{tx_hash, index}`. Without conversion the
+      join reads 0%, indistinguishable from "gossip has never heard of these channels".
+      Join rate is now reported every ingest run (**A+05**).
+- [ ] **A+01** proper: assert ingested counts match the source node's own graph RPC.
+      Currently true by construction, not asserted.
 - [ ] Derived signals: liveness buckets, `enabled` handling, node liveness/centrality, multi-asset coverage (**A+02**, **A+03**).
+      Blocked on gossip maturity, not on code: a freshly synced node reports **every** channel
+      direction as `null`, so there is nothing to bucket yet. Liveness needs `ChannelUpdate`
+      coverage to accumulate first.
 
 ### Phase 3 — the join
 - [ ] Attribute Phase 1's events via `channel_outpoint` → `{node1, node2}` (**A+05**).
