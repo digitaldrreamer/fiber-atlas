@@ -77,10 +77,14 @@ async function once(): Promise<void> {
     return;
   }
 
-  const pct = j.gossip === 0 ? 'n/a' : `${((j.both / j.gossip) * 100).toFixed(1)}%`;
-  console.log(
-    `  peers=${peers}  join: gossip=${j.gossip} l1=${j.l1} overlap=${j.both} (${pct} of gossip channels seen on L1)`,
-  );
+  // Both directions, always. They answer different questions and only the second
+  // bounds attribution; reporting the first alone overstates coverage by more than
+  // an order of magnitude (SPEC-FAULTLINE §2.3).
+  const fwd = j.gossip === 0 ? 'n/a' : `${((j.both / j.gossip) * 100).toFixed(1)}%`;
+  const rev = j.l1 === 0 ? 'n/a' : `${((j.both / j.l1) * 100).toFixed(1)}%`;
+  console.log(`  peers=${peers}  gossip=${j.gossip} l1=${j.l1} overlap=${j.both}`);
+  console.log(`    gossip->L1 ${fwd}  (join integrity; converges to ~100%)`);
+  console.log(`    L1->gossip ${rev}  (ATTRIBUTION COVERAGE — bounded by private channels)`);
 }
 
 try {

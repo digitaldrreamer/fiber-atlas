@@ -63,7 +63,20 @@ The practical consequence is that Faultline has a data source available immediat
 Two consequences worth stating plainly:
 
 - There is **no need to seed synthetic force-closes** for testing or demonstration. Real events exist in volume.
-- Any event whose `channel_outpoint` is absent from the graph is **quarantined, never discarded** (**F+04**). Channels that closed before our node first synced gossip are permanently unattributable, and that population is not negligible. The **join hit rate is therefore a first-class published metric**, not an implementation detail: it bounds Faultline's real coverage, and hiding it would overstate what the feed knows.
+- Any event whose `channel_outpoint` is absent from the graph is **quarantined, never discarded** (**F+04**).
+
+Two independent populations are permanently unattributable to a node pair, and both are large:
+
+1. **Channels closed before our node first synced gossip.** The gossip graph carries only *live* channels, so a channel that closed before we observed it was never in it. Historical backfill therefore attributes almost nothing.
+2. **Private channels.** A Fiber channel is public only when `public_channel_info` is set (`is_public()`, `crates/fiber-lib/src/fiber/channel.rs`); private channels are never announced and never carry a `ChannelUpdate`. Measured on CKB testnet 2026-07-31: **925 gossip channels against 5,017 live funding cells — ~18% publicly announced.** No amount of observation time closes this gap. It is structural.
+
+> **Normative.** Faultline MUST publish the join rate in **both directions**, because they answer different questions and only one of them bounds attribution:
+> - `gossip → L1` — does every announced channel have a funding cell? Converges to ~100%; an integrity check on the join itself (**A+05**).
+> - `L1 → gossip` — can a detected event be tied to a node pair? Bounded by the public/private ratio and by observation start. **This is the honest coverage figure.**
+>
+> Reporting only the first would overstate coverage by more than an order of magnitude. On testnet the two read 60.3% and 2.2% respectively.
+
+Detection coverage is unaffected: every close and penalty is found on L1 regardless of whether the channel was public. The limit is attribution, not detection — an unattributed penalty is still a real, verifiable, on-chain event.
 
 ---
 
@@ -71,7 +84,7 @@ Two consequences worth stating plainly:
 
 Attribution quality differs by event and MUST be labeled:
 
-- **Channel-level (high confidence):** every close is attributable to the pair `{node1, node2}` via the `channel_outpoint` join. Always available.
+- **Channel-level (high confidence):** a close is attributable to the pair `{node1, node2}` via the `channel_outpoint` join **when the channel is in the gossip graph**. This is *not* always available — see §2.3. It requires the channel to be public and to have been observed while open; on testnet that is a minority of channels. When the join misses, the event is retained as `unattributed` rather than dropped, and MUST NOT be quietly excluded from counts.
 - **Side-level for force-close (medium):** which of the two nodes broadcast the commitment can sometimes be inferred from the commitment output structure / which delayed branch is present. Report only when derivable; otherwise attribute to the channel.
 - **Cheater-level for penalty (medium):** the penalized party is whoever's revoked commitment was swept. The `commitment-lock` args carry per-channel derived key hashes (`local_delay_pubkey_hash`, `revocation_pubkey_hash`), **not** the node's gossip `pubkey` directly, so mapping the swept party to a specific `pubkey` is a best-effort heuristic (e.g. correlating with the funding parties and channel role). Report a confidence level with every penalty attribution.
 
