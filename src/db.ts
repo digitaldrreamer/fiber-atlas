@@ -174,6 +174,29 @@ CREATE TABLE IF NOT EXISTS block_time (
   fetched_at   INTEGER NOT NULL
 );
 
+-- ---------------------------------------------------------------------------
+-- Network location for an address a node advertises in gossip.
+--
+-- Keyed by IP, not by node: several nodes commonly share a host, and a node
+-- announces several addresses. Populated from Cloudflare Radar; only ever for
+-- addresses the node itself broadcast publicly, and never for private or loopback
+-- ranges (which are announced constantly and say nothing).
+--
+-- Absence means "not looked up", NOT "unknown location" — the API distinguishes
+-- them, because a map that silently drops unresolved nodes misrepresents its own
+-- coverage.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS ip_location (
+  ip           TEXT PRIMARY KEY,
+  ip_version   TEXT,
+  country_code TEXT,
+  country_name TEXT,
+  asn          TEXT,
+  asn_name     TEXT,
+  asn_org      TEXT,
+  fetched_at   INTEGER NOT NULL
+);
+
 -- Cursor/health for the gossip ingest loop.
 CREATE TABLE IF NOT EXISTS gossip_sync (
   id             INTEGER PRIMARY KEY CHECK (id = 1),
@@ -637,6 +660,44 @@ export class Store {
           ORDER BY kind, attribution`,
       )
       .all() as { kind: string; attribution: string; n: number }[];
+  }
+
+  // -------------------------------------------------------------------------
+  // Network location
+  // -------------------------------------------------------------------------
+
+  nodeAddresses(): { pubkey: string; addresses_json: string | null }[] {
+    return this.db
+      .prepare('SELECT pubkey, addresses_json FROM node')
+      .all() as { pubkey: string; addresses_json: string | null }[];
+  }
+
+  knownIps(): Set<string> {
+    return new Set(
+      (this.db.prepare('SELECT ip FROM ip_location').all() as { ip: string }[]).map((r) => r.ip),
+    );
+  }
+
+  putIpLocation(r: {
+    ip: string;
+    ipVersion: string | null;
+    countryCode: string | null;
+    countryName: string | null;
+    asn: string | null;
+    asnName: string | null;
+    asnOrg: string | null;
+  }): void {
+    this.db
+      .prepare(
+        `INSERT INTO ip_location (ip, ip_version, country_code, country_name, asn, asn_name, asn_org, fetched_at)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(ip) DO UPDATE SET
+              ip_version = excluded.ip_version, country_code = excluded.country_code,
+              country_name = excluded.country_name, asn = excluded.asn,
+              asn_name = excluded.asn_name, asn_org = excluded.asn_org,
+              fetched_at = excluded.fetched_at`,
+      )
+      .run(r.ip, r.ipVersion, r.countryCode, r.countryName, r.asn, r.asnName, r.asnOrg, Date.now());
   }
 
   // -------------------------------------------------------------------------

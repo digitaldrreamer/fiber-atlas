@@ -95,6 +95,21 @@ services:
       FIBER_ATLAS_DB: /data/fiber-atlas.testnet.db
     command: ["node", "src/bin/blocktime.ts", "--watch", "--interval", "900"]
 
+  # Resolves the IPs nodes announce in gossip to country + hosting AS, via
+  # Cloudflare Radar. Optional: with no CLOUDFLARE_API_TOKEN it exits 0 having done
+  # nothing, and the API reports the nodes as unresolved rather than dropping them.
+  # Only ever looks up addresses the node itself broadcast; private ranges are never
+  # sent anywhere. Hourly is generous — the address set changes rarely and results
+  # are cached per IP forever.
+  geo-testnet:
+    <<: *atlas
+    restart: unless-stopped
+    environment:
+      FIBER_NETWORK: testnet
+      FIBER_ATLAS_DB: /data/fiber-atlas.testnet.db
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:-}
+    command: ["node", "src/bin/geo.ts", "--watch", "--interval", "3600"]
+
   # ---------------------------------------------------------------- mainnet ---
   fnn-mainnet:
     <<: *fnn-build
@@ -142,6 +157,15 @@ services:
       CKB_RPC_URL: ${MAINNET_CKB_RPC_URL:-https://mainnet.ckbapp.dev/}
       FIBER_ATLAS_DB: /data/fiber-atlas.mainnet.db
     command: ["node", "src/bin/blocktime.ts", "--watch", "--interval", "900"]
+
+  geo-mainnet:
+    <<: *atlas
+    restart: unless-stopped
+    environment:
+      FIBER_NETWORK: mainnet
+      FIBER_ATLAS_DB: /data/fiber-atlas.mainnet.db
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:-}
+    command: ["node", "src/bin/geo.ts", "--watch", "--interval", "3600"]
 
   # ------------------------------------------------------------------- api ---
   # Serves every network whose database exists, side by side. Read-only: it opens

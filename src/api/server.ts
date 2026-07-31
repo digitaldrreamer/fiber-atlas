@@ -21,6 +21,7 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { Store } from '../db.ts';
+import { routableIps } from '../atlas/multiaddr.ts';
 
 export interface NetworkStore {
   readonly name: string;
@@ -76,6 +77,308 @@ function withTime(row: Record<string, unknown>, ...fields: string[]): Record<str
 /** `LEFT JOIN` a block_time row. Left, always: an unresolved block must not drop a row. */
 const timeJoin = (alias: string, col: string) =>
   `LEFT JOIN block_time ${alias} ON ${alias}.block_number = ${col}`;
+
+// ---------------------------------------------------------------------------
+// Network location
+// ---------------------------------------------------------------------------
+
+/**
+ * Where the network physically sits, by country and by hosting AS.
+ *
+ * Counted per NODE, not per address: a node announcing three addresses in one
+ * datacentre is one node there, and counting addresses would silently weight
+ * multi-homed hosts. A node whose addresses are all unresolved (or all private) is
+ * counted in `unresolved_nodes` rather than dropped — a concentration figure whose
+ * denominator quietly excludes what it could not resolve is not a concentration
+ * figure.
+ */
+function geo(c: Ctx) {
+  const rows = all<{ pubkey: string; addresses_json: string | null }>(
+    c.net,
+    'SELECT pubkey, addresses_json FROM node',
+  );
+  const loc = new Map<string, { country_code: string | null; country_name: string | null; asn_org: string | null; asn: string | null }>();
+  for (const r of all<{ ip: string; country_code: string | null; country_name: string | null; asn_org: string | null; asn: string | null }>(
+    c.net,
+    'SELECT ip, country_code, country_name, asn_org, asn FROM ip_location',
+  )) {
+    loc.set(r.ip, r);
+  }
+
+  const countries = new Map<string, { code: string | null; name: string | null; nodes: number }>();
+  const providers = new Map<string, { asn: string | null; org: string | null; nodes: number }>();
+  let unresolved = 0;
+  let noRoutable = 0;
+
+  for (const n of rows) {
+    const ips = routableIps(n.addresses_json);
+    if (ips.length === 0) {
+      noRoutable++;
+      continue;
+    }
+    const hits = ips.map((ip) => loc.get(ip)).filter((x): x is NonNullable<typeof x> => x != null);
+    if (hits.length === 0) {
+      unresolved++;
+      continue;
+    }
+    // One vote per node per distinct country/AS, so a multi-homed node in a single
+    // region is not counted three times.
+    for (const cc of new Set(hits.map((h) => h.country_code ?? 'unknown'))) {
+      const cur = countries.get(cc) ?? {
+        code: cc === 'unknown' ? null : cc,
+        name: hits.find((h) => (h.country_code ?? 'unknown') === cc)?.country_name ?? null,
+        nodes: 0,
+      };
+      cur.nodes++;
+      countries.set(cc, cur);
+    }
+    for (const org of new Set(hits.map((h) => h.asn_org ?? 'unknown'))) {
+      const cur = providers.get(org) ?? {
+        asn: hits.find((h) => (h.asn_org ?? 'unknown') === org)?.asn ?? null,
+        org: org === 'unknown' ? null : org,
+        nodes: 0,
+      };
+      cur.nodes++;
+      providers.set(org, cur);
+    }
+  }
+
+  const resolved = rows.length - unresolved - noRoutable;
+  return {
+    coverage: {
+      nodes: rows.length,
+      resolved_nodes: resolved,
+      unresolved_nodes: unresolved,
+      nodes_without_routable_address: noRoutable,
+      note:
+        'unresolved_nodes announce a routable address that has not been looked up yet. nodes_without_routable_address announce only private/loopback addresses — those have no location to find. Neither is counted in the breakdowns below; read them against resolved_nodes, not against nodes.',
+    },
+    countries: [...countries.values()].sort((a, b) => b.nodes - a.nodes),
+    hosting_providers: [...providers.values()].sort((a, b) => b.nodes - a.nodes),
+    source:
+      'Cloudflare Radar, keyed on the IP addresses nodes themselves broadcast in gossip. Nothing is probed or scanned; DNS addresses are not resolved.',
+  };
+}
+
+/** Per-node location, shaped for a node page. Same rules as `geo`. */
+function nodeLocations(c: Ctx, addressesJson: string | null) {
+  const ips = routableIps(addressesJson);
+  if (ips.length === 0) return { addresses: [], note: 'No routable address announced (private or loopback only).' };
+  const rows = ips.map((ip) => {
+    const r = one<{ ip_version: string | null; country_code: string | null; country_name: string | null; asn: string | null; asn_org: string | null }>(
+      c.net,
+      'SELECT ip_version, country_code, country_name, asn, asn_org FROM ip_location WHERE ip = ?',
+      ip,
+    );
+    return {
+      ip,
+      resolved: r != null,
+      ip_version: r?.ip_version ?? null,
+      country_code: r?.country_code ?? null,
+      country_name: r?.country_name ?? null,
+      asn: r?.asn ?? null,
+      asn_org: r?.asn_org ?? null,
+    };
+  });
+  return { addresses: rows, source: 'Cloudflare Radar, on gossip-announced addresses only.' };
+}
+
+// ---------------------------------------------------------------------------
+// Distributions
+// ---------------------------------------------------------------------------
+
+/**
+ * Percentiles over a sample, computed here rather than in SQL.
+ *
+ * A mean alone is misleading for every quantity this project holds: channel
+ * capacity, fee rate and force-close resolution time are all heavily skewed, and
+ * two of the three have a long tail that a mean hides completely. `n` travels with
+ * the summary so a caller can see how much sample it is reading.
+ */
+function summarise(values: number[]): Record<string, number> | null {
+  if (values.length === 0) return null;
+  const v = [...values].sort((a, b) => a - b);
+  const at = (q: number) => v[Math.min(v.length - 1, Math.floor(q * v.length))] as number;
+  return {
+    n: v.length,
+    min: v[0] as number,
+    p25: at(0.25),
+    median: at(0.5),
+    p75: at(0.75),
+    p95: at(0.95),
+    max: v[v.length - 1] as number,
+    mean: Number((v.reduce((a, b) => a + b, 0) / v.length).toFixed(2)),
+  };
+}
+
+/** Bucket ages (in ms) into human spans. Buckets, not a mean: staleness is not normal. */
+function ageBuckets(agesMs: number[]): Record<string, number> {
+  const H = 3_600_000;
+  const b = { under_1h: 0, h1_6: 0, h6_24: 0, d1_7: 0, over_7d: 0 };
+  for (const a of agesMs) {
+    if (a < H) b.under_1h++;
+    else if (a < 6 * H) b.h1_6++;
+    else if (a < 24 * H) b.h6_24++;
+    else if (a < 7 * 24 * H) b.d1_7++;
+    else b.over_7d++;
+  }
+  return b;
+}
+
+/**
+ * Capacity, fee and channel-lifetime distributions.
+ *
+ * Every Lightning explorer leads with these and none of them exists for Fiber.
+ * Capacity comes from the L1 archive (authoritative and complete); fee rate from
+ * live gossip (partial by nature); lifetime needs both a dated open and a dated
+ * close, so its `n` is smaller than the closed-channel count and says so.
+ */
+function distribution(c: Ctx) {
+  const caps = all<{ capacity: string | null }>(
+    c.net,
+    'SELECT capacity FROM channel WHERE close_kind IS NULL',
+  )
+    .map((r) => hexToNumber(r.capacity))
+    .filter((n): n is number => n !== null);
+
+  const fees = all<{ fee_rate: string | null }>(c.net, 'SELECT fee_rate FROM channel_update')
+    .map((r) => hexToNumber(r.fee_rate))
+    .filter((n): n is number => n !== null);
+
+  const lifetimes = all<{ days: number }>(
+    c.net,
+    `SELECT (cb.timestamp_ms - ob.timestamp_ms) / 86400000.0 AS days
+       FROM channel ch
+       JOIN block_time ob ON ob.block_number = ch.open_block
+       JOIN block_time cb ON cb.block_number = ch.close_block
+      WHERE ch.close_kind IS NOT NULL AND cb.timestamp_ms >= ob.timestamp_ms`,
+  ).map((r) => Number(r.days.toFixed(4)));
+
+  const closedTotal = one<{ n: number }>(
+    c.net,
+    'SELECT COUNT(*) AS n FROM channel WHERE close_kind IS NOT NULL',
+  )!.n;
+
+  return {
+    open_channel_capacity_shannons: {
+      ...(summarise(caps) ?? {}),
+      total: caps.reduce((a, b) => a + b, 0),
+      source: 'L1 archive — complete for channels this scan has not seen close.',
+    },
+    announced_fee_rate_shannons_per_kb: {
+      ...(summarise(fees) ?? {}),
+      source:
+        'Live gossip only, one sample per announced direction. Covers currently-announced channels, not the archive.',
+    },
+    closed_channel_lifetime_days: {
+      ...(summarise(lifetimes) ?? {}),
+      closed_channels_total: closedTotal,
+      dated_coverage: closedTotal ? Number((lifetimes.length / closedTotal).toFixed(4)) : null,
+      source:
+        'Open and close block header timestamps. Only channels with BOTH dated are included; compare n against closed_channels_total.',
+    },
+    capacity_is_not_balance:
+      'Capacity is an upper bound on what a channel could carry, never spendable liquidity (A+04).',
+  };
+}
+
+/**
+ * How fresh the live view is — per channel direction and per node.
+ *
+ * The gossip half of this project is the only part that changes between polls, and
+ * a stale announcement is the closest thing to a routing-liveness signal a passive
+ * observer can produce. Reported as buckets rather than an average because the
+ * distribution is not unimodal: most channels are re-announced constantly and a
+ * tail has not been heard from in weeks, and a mean would sit in the empty middle.
+ */
+function liveness(c: Ctx) {
+  const now = Date.now();
+  const updates = all<{ timestamp: number | null; enabled: number | null; last_seen: number }>(
+    c.net,
+    'SELECT timestamp, enabled, last_seen FROM channel_update',
+  );
+  const nodes = all<{ last_seen: number }>(c.net, 'SELECT last_seen FROM node');
+
+  const announced = updates
+    .map((u) => u.timestamp)
+    .filter((t): t is number => typeof t === 'number');
+
+  return {
+    as_of: new Date(now).toISOString(),
+    channel_directions: {
+      total: updates.length,
+      enabled: updates.filter((u) => u.enabled === 1).length,
+      disabled: updates.filter((u) => u.enabled === 0).length,
+      unknown: updates.filter((u) => u.enabled === null).length,
+      announcement_age: ageBuckets(announced.map((t) => now - t)),
+      undated: updates.length - announced.length,
+    },
+    nodes: {
+      total: nodes.length,
+      last_seen_age: ageBuckets(nodes.map((n) => now - n.last_seen)),
+    },
+    caveats: [
+      'Staleness is measured against OUR observation, so it degrades if the observing node loses peers. Cross-check /health.gossip_last_run_at.',
+      'A stale announcement is a soft signal. It suggests a path is not being maintained; it does not prove the channel is unusable.',
+      'enabled=unknown means gossip carried no ChannelUpdate for that direction — not that it is disabled (SPEC-ATLAS §3).',
+    ],
+  };
+}
+
+/**
+ * How long a force-close actually takes to resolve on chain.
+ *
+ * A force-close creates a commitment cell; the funds are not moved until that cell
+ * is spent, either by the counterparty sweeping a revoked state (penalty) or by
+ * normal settlement. The gap between those two blocks is the wait a user actually
+ * experiences when a channel fails, and it is derivable from L1 alone — no gossip,
+ * no attribution, so it is complete rather than a 0.29% sample. It is not published
+ * anywhere else for Fiber.
+ *
+ * Commitment cells with no spend are reported separately and NOT as a latency of
+ * zero or as an average-so-far: an unresolved close is a different outcome, not a
+ * fast one.
+ */
+function faultlineTiming(c: Ctx) {
+  const rows = all<{ spend_kind: string; hours: number }>(
+    c.net,
+    `SELECT cc.spend_kind,
+            (sb.timestamp_ms - cb.timestamp_ms) / 3600000.0 AS hours
+       FROM commitment_cell cc
+       JOIN block_time cb ON cb.block_number = cc.created_block
+       JOIN block_time sb ON sb.block_number = cc.spend_block
+      WHERE cc.spend_kind IS NOT NULL AND sb.timestamp_ms >= cb.timestamp_ms`,
+  );
+  const by = (kind: string) =>
+    summarise(rows.filter((r) => r.spend_kind === kind).map((r) => Number(r.hours.toFixed(4))));
+
+  const unspent = one<{ n: number; oldest: number | null }>(
+    c.net,
+    `SELECT COUNT(*) AS n, MIN(bt.timestamp_ms) AS oldest
+       FROM commitment_cell cc
+       LEFT JOIN block_time bt ON bt.block_number = cc.created_block
+      WHERE cc.spend_kind IS NULL`,
+  )!;
+
+  return {
+    what_this_measures:
+      'Blocks between a force-close creating a commitment cell and that cell being spent, converted to hours via chain header timestamps. This is the on-chain wait after a channel fails.',
+    resolution_hours: {
+      penalty: by('penalty'),
+      settlement: by('settlement'),
+    },
+    unresolved: {
+      commitment_cells: unspent.n,
+      oldest_created_at: unspent.oldest ? new Date(unspent.oldest).toISOString() : null,
+      note:
+        'Commitment cells this scan has never seen spent. Counted separately, never folded into the averages above — an unresolved close is a different outcome, not a fast one. Some are simply abandoned testnet channels.',
+    },
+    caveats: [
+      'Derived from L1 only, so it is complete — unlike node-level attribution, which covers 0.29% of events.',
+      'A long settlement time is usually a contract delay period elapsing, not a participant failing.',
+    ],
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Reliability
@@ -229,6 +532,7 @@ function node(c: Ctx, pubkey: string) {
       items: rows.map((r) => decimalCapacity(withTime(r, 'open_block', 'close_block'))),
     },
     live_policy: nodePolicy(c, pubkey),
+    location: nodeLocations(c, (n['addresses_json'] as string | null) ?? null),
     capacity_is_not_balance:
       'capacity_shannons is the channel total, an upper bound. Fiber does not broadcast balances, so no field here is spendable liquidity (SPEC-ATLAS §5.1, A+04).',
     faultline: reliability(c.net, pubkey, w),
@@ -728,11 +1032,15 @@ export function createApi(
             '/v0/{network}/nodes',
             '/v0/{network}/nodes/{pubkey}',
             '/v0/{network}/lsps',
+            '/v0/{network}/liveness',
+            '/v0/{network}/distribution',
+            '/v0/{network}/geo',
             '/v0/{network}/channels?status=open|closed',
             '/v0/{network}/channels/{outpoint}',
             '/v0/{network}/channels/{outpoint}/updates',
             '/v0/{network}/faultline/events?kind=penalty|force_close|cooperative_close&after={cursor}',
             '/v0/{network}/faultline/penalties',
+            '/v0/{network}/faultline/timing',
             '/v0/{network}/faultline/nodes/{pubkey}',
           ],
           reading_the_data: {
@@ -835,6 +1143,9 @@ export function createApi(
         return n ? wrap(n) : send(res, 404, { error: 'node not found', network: net.name });
       }
       if (rest.length === 1 && rest[0] === 'lsps') return wrap(lsps(c));
+      if (rest.length === 1 && rest[0] === 'liveness') return wrap(liveness(c));
+      if (rest.length === 1 && rest[0] === 'distribution') return wrap(distribution(c));
+      if (rest.length === 1 && rest[0] === 'geo') return wrap(geo(c));
       if (rest.length === 1 && rest[0] === 'channels') return wrap(channels(c));
       if (rest.length === 2 && rest[0] === 'channels') {
         const ch = channel(c, rest[1] as string);
@@ -857,6 +1168,9 @@ export function createApi(
         // an `error` key that a happy path would parse straight past.
         if ('error' in body) return send(res, 400, { network: net.name, ...body });
         return wrap(body);
+      }
+      if (rest.length === 2 && rest[0] === 'faultline' && rest[1] === 'timing') {
+        return wrap(faultlineTiming(c));
       }
       if (rest.length === 3 && rest[0] === 'faultline' && rest[1] === 'nodes') {
         const w = intParam(url, 'window_blocks', 200_000, 10_000_000);
