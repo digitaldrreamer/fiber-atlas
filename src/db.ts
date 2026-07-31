@@ -197,6 +197,32 @@ CREATE TABLE IF NOT EXISTS ip_location (
   fetched_at   INTEGER NOT NULL
 );
 
+-- ---------------------------------------------------------------------------
+-- Continuous-presence runs, one row per uninterrupted stretch a node was
+-- announced in gossip.
+--
+-- This is the honest substitute for the reliability score this project cannot
+-- compute (SPEC-FAULTLINE §3.1): node-level attribution covers 0.27% of events, so
+-- "has this node been reachable, continuously, for a month" is the strongest
+-- positive signal available about a specific node.
+--
+-- Sessions rather than samples. Writing a row per node per ingest pass would be
+-- ~50k rows a day to answer a question about *runs*; a session is extended in place
+-- while the node keeps appearing and closed when it stops. It follows that this
+-- table only measures forward from when it was created — it cannot be backfilled,
+-- because nobody recorded who was online last year.
+--
+-- last_seen_at is OUR observation, so an isolated observing node ends everyone's
+-- session at once. The API pairs uptime with gossip health for that reason.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS node_presence (
+  pubkey       TEXT NOT NULL,
+  started_at   INTEGER NOT NULL,
+  last_seen_at INTEGER NOT NULL,
+  PRIMARY KEY (pubkey, started_at)
+);
+CREATE INDEX IF NOT EXISTS idx_presence_node ON node_presence(pubkey, last_seen_at DESC);
+
 -- Cursor/health for the gossip ingest loop.
 CREATE TABLE IF NOT EXISTS gossip_sync (
   id             INTEGER PRIMARY KEY CHECK (id = 1),
@@ -660,6 +686,48 @@ export class Store {
           ORDER BY kind, attribution`,
       )
       .all() as { kind: string; attribution: string; n: number }[];
+  }
+
+  // -------------------------------------------------------------------------
+  // Presence
+  // -------------------------------------------------------------------------
+
+  /**
+   * Record that these nodes were announced right now.
+   *
+   * Extends each node's open session if it was seen within `gapMs`, otherwise
+   * starts a new one. `gapMs` must be comfortably larger than the ingest interval
+   * or every pass opens a fresh session and every node reads as newly arrived.
+   *
+   * Returns how many runs were started, which is the interesting number: a spike
+   * means nodes are flapping, not that new nodes appeared.
+   */
+  recordPresence(pubkeys: readonly string[], gapMs: number): { extended: number; started: number } {
+    const latest = this.db.prepare(
+      'SELECT started_at, last_seen_at FROM node_presence WHERE pubkey = ? ORDER BY last_seen_at DESC LIMIT 1',
+    );
+    const extend = this.db.prepare(
+      'UPDATE node_presence SET last_seen_at = ? WHERE pubkey = ? AND started_at = ?',
+    );
+    const start = this.db.prepare(
+      'INSERT OR IGNORE INTO node_presence (pubkey, started_at, last_seen_at) VALUES (?, ?, ?)',
+    );
+    const now = Date.now();
+    let extended = 0;
+    let started = 0;
+    this.transaction(() => {
+      for (const pk of pubkeys) {
+        const row = latest.get(pk) as { started_at: number; last_seen_at: number } | undefined;
+        if (row && now - row.last_seen_at <= gapMs) {
+          extend.run(now, pk, row.started_at);
+          extended++;
+        } else {
+          start.run(pk, now, now);
+          started++;
+        }
+      }
+    });
+    return { extended, started };
   }
 
   // -------------------------------------------------------------------------

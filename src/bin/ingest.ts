@@ -54,6 +54,7 @@ async function once(): Promise<void> {
   console.log(
     `nodes=${r.nodes} channels=${r.channels} ` +
       `directions(with_update=${r.directionsWithUpdate} missing=${r.directionsMissing}) ` +
+      `presence(extended=${r.presenceExtended} started=${r.presenceStarted}) ` +
       `malformed_outpoints=${r.malformedOutpoints} in ${secs}s`,
   );
   if (r.malformedOutpoints > 0) {

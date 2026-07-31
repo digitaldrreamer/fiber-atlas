@@ -9,6 +9,13 @@ import { FiberRpc, type GraphChannel, type GraphNode } from './graph.ts';
 import { fiberOutPointToKey } from '../ckb/outpoint.ts';
 import type { Store } from '../db.ts';
 
+/**
+ * How long a node may vanish from gossip before its presence run is considered
+ * broken. Comfortably above the ingest interval (120s in the deployed stack): a
+ * single missed poll is a hiccup in our observation, not a node going away.
+ */
+export const PRESENCE_GAP_MS = 15 * 60 * 1000;
+
 export interface IngestResult {
   nodes: number;
   channels: number;
@@ -16,6 +23,9 @@ export interface IngestResult {
   malformedOutpoints: number;
   directionsWithUpdate: number;
   directionsMissing: number;
+  /** Presence runs extended vs newly opened this pass. A spike in `started` is flapping. */
+  presenceExtended: number;
+  presenceStarted: number;
 }
 
 export async function ingestGraph(rpc: FiberRpc, store: Store): Promise<IngestResult> {
@@ -25,7 +35,14 @@ export async function ingestGraph(rpc: FiberRpc, store: Store): Promise<IngestRe
     malformedOutpoints: 0,
     directionsWithUpdate: 0,
     directionsMissing: 0,
+    presenceExtended: 0,
+    presenceStarted: 0,
   };
+
+  // Collected across pages and written once: a node is "present" if it appeared
+  // anywhere in this pass, and recording per page would open a run for a node that
+  // simply landed on page two.
+  const seenPubkeys: string[] = [];
 
   for await (const page of rpc.nodes()) {
     store.transaction(() => {
@@ -41,6 +58,7 @@ export async function ingestGraph(rpc: FiberRpc, store: Store): Promise<IngestRe
           udt_cfg_json: JSON.stringify(n.udt_cfg_infos ?? null),
           last_announced: Number(n.timestamp),
         });
+        seenPubkeys.push(n.pubkey);
         result.nodes++;
       }
     });
@@ -90,6 +108,15 @@ export async function ingestGraph(rpc: FiberRpc, store: Store): Promise<IngestRe
         }
       }
     });
+  }
+
+  // Only when the pass actually saw nodes. An empty result means our observer is
+  // isolated or the RPC failed, and writing that would close every node's run
+  // simultaneously — recording our own outage as the whole network going down.
+  if (seenPubkeys.length > 0) {
+    const p = store.recordPresence(seenPubkeys, PRESENCE_GAP_MS);
+    result.presenceExtended = p.extended;
+    result.presenceStarted = p.started;
   }
 
   store.recordGossipSync(result.nodes, result.channels);

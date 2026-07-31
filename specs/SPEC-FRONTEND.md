@@ -84,8 +84,20 @@ How long funds are locked after a channel fails. Complete, derived from L1 alone
 **Event feed** — `/v0/{network}/faultline/events`
 Every close, penalty and settlement, chronological, dated, cursor-paginated, filterable by kind. Each row: kind, block, timestamp, tx hash, channel, attribution.
 
+**Activity over time** — `/v0/{network}/activity`
+Channels opened and closed per calendar month across the whole archive, with force-closes broken out and a running net total. 26 months of testnet history, 2024-05 to now. The only view keyed to calendar time rather than chain progress, so it is the one that can be read against outside events — a release, an incident, a hackathon.
+
+**Concentration** — `/v0/{network}/concentration`
+Top-1 / top-3 / top-10 share and HHI, by capacity and by channel count, with the leading nodes named. Testnet: top node holds **37% of channels**, top 3 hold **77%**. Mainnet: top 3 hold **87% of capacity** across 8 participants. Note the participant counts are small enough that this is arithmetic more than economics — the response says so and the UI should too.
+
+**Stuck funds** — `/v0/{network}/faultline/unresolved`
+The **4,982** force-closes whose commitment cell has never been seen spent, listed with age (oldest: 2024-10-12) and capacity. On testnet mostly abandoned experiments; the same query on mainnet is a genuine operational alert. Phrased throughout as "never seen spent by this archive", not "permanently stuck".
+
 **Nodes** — `/v0/{network}/nodes`, `/nodes/{pubkey}`, `/lsps`
-Pubkey, name (**often empty**), version, addresses, auto-accept threshold, first/last seen, open channel count, announced capacity, live fee policy, location. `/lsps` ranks candidates on auto-accept + capacity + liveness, and states in the response that it deliberately omits the reliability term the spec calls for.
+Pubkey, name (**often empty**), version, addresses, auto-accept threshold, first/last seen, open channel count, announced capacity, live fee policy, location, and uptime. `/lsps` ranks candidates on auto-accept + capacity + liveness, and states in the response that it deliberately omits the reliability term the spec calls for.
+
+**Node uptime** — on `/nodes/{pubkey}`
+Continuous-presence runs: current run length, total runs, longest run. This is the **closest thing to a positive signal about a specific node** that exists here, and the natural thing to put where a reliability score cannot go. Two constraints: it is not reliability (a node can be continuously present and still force-close on you), and it **cannot be backfilled** — presence tracking begins when the table does, so every node reads as short-lived at first and the response carries `observed_since` to say so. A design that shows uptime prominently needs to survive that number being small and honest for the first few weeks.
 
 **Channels** — `/v0/{network}/channels`, `/channels/{outpoint}`, `/channels/{outpoint}/updates`
 Outpoint, both node pubkeys, capacity, dated open and close, close kind, and per-direction routing policy: enabled flag, fee rate, TLC minimum, TLC expiry delta, announcement time.
@@ -107,6 +119,7 @@ Scan cursors, gossip freshness, block-time completeness. Whether the data being 
 - **Names are usually absent.** Most nodes announce an empty `node_name`. The primary identifier is a 66-character hex pubkey. This is a real typographic problem, not an edge case.
 - **Two testnet nodes hold 544 and 543 channels**; the next holds 29. It is a test harness and it distorts every ranking. Rankings need to survive it.
 - **Fee rates are nearly constant.** Almost every node is on the default. A fee comparison view will be a flat line — that *is* the finding.
+- **Uptime starts at zero and grows.** Presence tracking cannot be backfilled. For the first weeks after launch every node shows a short run, and the interface must make that read as "we have only been watching this long" rather than "this node is new or unstable".
 - **Mainnet has zero of several things.** Zero penalties, zero attributed events. Empty states are the normal case, and they carry meaning: "0 penalties in 17 months of complete history" is the strongest positive claim the project can make. An empty state here should read as an achievement, not as a missing feature.
 - **Timestamps can be null.** A block whose header has not been fetched has no date. Coverage is currently 100% but will dip whenever a scan runs ahead of the block-time pass. Dates must degrade to "unknown", never to a guess.
 
@@ -130,7 +143,9 @@ These are constraints on **meaning**, not on visual design. They exist because t
 
 **4.7 Every derived ratio shows its numerator and denominator.** A bare percentage will be quoted; the fraction beside it prevents the quote from being wrong.
 
-**4.8 Staleness is measured from our observation.** Anything time-sensitive needs the "as of" moment visible, and a way to tell a stale *network* from a stale *observer*.
+**4.8 Uptime is not reliability.** Continuous presence says a node was announced, not that it behaved. It may sit where a reliability score would go, but it must not be styled as one — no grades, no scores out of ten, no trust badges.
+
+**4.9 Staleness is measured from our observation.** Anything time-sensitive needs the "as of" moment visible, and a way to tell a stale *network* from a stale *observer*.
 
 ---
 

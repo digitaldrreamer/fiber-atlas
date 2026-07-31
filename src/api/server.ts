@@ -160,6 +160,58 @@ function geo(c: Ctx) {
   };
 }
 
+/**
+ * Continuous-presence history for one node.
+ *
+ * The closest thing to a positive reliability signal this project can honestly
+ * produce. It is NOT reliability — a node can be continuously announced and still
+ * force-close on you — but "reachable without interruption for 40 days" is a real,
+ * observed fact, which is more than the on-chain record can offer about any
+ * specific node (0.27% attribution coverage; zero on mainnet).
+ *
+ * `observed_since` is when THIS ARCHIVE started watching, not when the node
+ * appeared. The table cannot be backfilled — nobody recorded who was online before
+ * it existed — so early readings understate every node and must say so.
+ */
+function nodeUptime(c: Ctx, pubkey: string) {
+  const runs = all<{ started_at: number; last_seen_at: number }>(
+    c.net,
+    'SELECT started_at, last_seen_at FROM node_presence WHERE pubkey = ? ORDER BY started_at',
+    pubkey,
+  );
+  const watchedFrom = one<{ t: number | null }>(
+    c.net,
+    'SELECT MIN(started_at) AS t FROM node_presence',
+  )?.t ?? null;
+
+  if (runs.length === 0) {
+    return {
+      observed: false,
+      observed_since: watchedFrom ? new Date(watchedFrom).toISOString() : null,
+      reason:
+        'No presence run recorded. Either this archive has not observed the node since presence tracking began, or tracking has only just started.',
+    };
+  }
+  const last = runs[runs.length - 1]!;
+  const durations = runs.map((r) => r.last_seen_at - r.started_at);
+  return {
+    observed: true,
+    observed_since: watchedFrom ? new Date(watchedFrom).toISOString() : null,
+    current_run: {
+      started_at: new Date(last.started_at).toISOString(),
+      last_seen_at: new Date(last.last_seen_at).toISOString(),
+      days: Number(((last.last_seen_at - last.started_at) / 86400000).toFixed(2)),
+    },
+    runs: runs.length,
+    longest_run_days: Number((Math.max(...durations) / 86400000).toFixed(2)),
+    caveats: [
+      'Measured from observed_since only. This table cannot be backfilled, so a node online for a year reads as short-lived until enough time passes.',
+      'Presence is OUR observation. If the observing node loses peers, every run ends at once — cross-check /health.gossip_last_run_at before reading a break as the node going away.',
+      'Continuous presence is not reliability. It says the node was announced, not that it behaved.',
+    ],
+  };
+}
+
 /** Per-node location, shaped for a node page. Same rules as `geo`. */
 function nodeLocations(c: Ctx, addressesJson: string | null) {
   const ips = routableIps(addressesJson);
@@ -380,6 +432,191 @@ function faultlineTiming(c: Ctx) {
   };
 }
 
+/**
+ * Channel opens and closes per calendar month, across the whole archive.
+ *
+ * Possible only since block headers were fetched — before that every channel had a
+ * height and no date. Calendar months, not block buckets, because this is the one
+ * view meant to be read against the outside world (a release, an incident, a
+ * hackathon) rather than against chain progress.
+ *
+ * A month is included only if it has a dated event; gaps are real gaps.
+ */
+function activity(c: Ctx) {
+  const opens = all<{ month: string; n: number }>(
+    c.net,
+    `SELECT strftime('%Y-%m', bt.timestamp_ms / 1000, 'unixepoch') AS month, COUNT(*) AS n
+       FROM channel ch JOIN block_time bt ON bt.block_number = ch.open_block
+      GROUP BY month`,
+  );
+  const closes = all<{ month: string; n: number; force: number }>(
+    c.net,
+    `SELECT strftime('%Y-%m', bt.timestamp_ms / 1000, 'unixepoch') AS month,
+            COUNT(*) AS n, SUM(ch.close_kind = 'force_close') AS force
+       FROM channel ch JOIN block_time bt ON bt.block_number = ch.close_block
+      WHERE ch.close_kind IS NOT NULL
+      GROUP BY month`,
+  );
+  const months = [...new Set([...opens.map((o) => o.month), ...closes.map((x) => x.month)])].sort();
+  const oMap = new Map(opens.map((o) => [o.month, o.n]));
+  const cMap = new Map(closes.map((x) => [x.month, x]));
+
+  let net = 0;
+  return {
+    months: months.map((m) => {
+      const o = oMap.get(m) ?? 0;
+      const cl = cMap.get(m);
+      net += o - (cl?.n ?? 0);
+      return {
+        month: m,
+        opened: o,
+        closed: cl?.n ?? 0,
+        force_closed: cl?.force ?? 0,
+        // Running total of opens minus closes. Not the same as "channels open at the
+        // end of this month" for any month before the scan began, and named so it
+        // cannot be mistaken for it.
+        cumulative_net_opened: net,
+      };
+    }),
+    note:
+      'Calendar months from chain header timestamps. Channels with an undated open or close block are omitted from that side of the count; compare totals against /summary.',
+  };
+}
+
+/**
+ * How concentrated the network is, by channel count and by capacity.
+ *
+ * Reported over nodes visible in gossip, which is the only place node identity
+ * exists — so this describes the announced network, not the whole archive. Three
+ * measures rather than one because they disagree usefully: a top-N share is legible,
+ * HHI is the standard, and neither survives being quoted without `nodes`.
+ *
+ * On both networks this is currently dominated by a handful of participants, and on
+ * testnet by a two-node test harness. That is the finding, but it is also a warning:
+ * a concentration figure over 6 nodes is arithmetic, not economics.
+ */
+function concentration(c: Ctx) {
+  const rows = all<{ pubkey: string; node_name: string | null }>(
+    c.net,
+    'SELECT pubkey, node_name FROM node',
+  );
+  const chans = all<{ node1_pubkey: string | null; node2_pubkey: string | null; capacity: string | null }>(
+    c.net,
+    'SELECT node1_pubkey, node2_pubkey, capacity FROM channel WHERE close_kind IS NULL AND node1_pubkey IS NOT NULL',
+  );
+
+  const cap = new Map<string, number>();
+  const cnt = new Map<string, number>();
+  for (const ch of chans) {
+    const v = hexToNumber(ch.capacity) ?? 0;
+    for (const p of [ch.node1_pubkey, ch.node2_pubkey]) {
+      if (!p) continue;
+      cap.set(p, (cap.get(p) ?? 0) + v);
+      cnt.set(p, (cnt.get(p) ?? 0) + 1);
+    }
+  }
+
+  const measure = (m: Map<string, number>) => {
+    const vals = [...m.values()].sort((a, b) => b - a);
+    const total = vals.reduce((a, b) => a + b, 0);
+    if (total === 0) return null;
+    const share = (k: number) => Number((vals.slice(0, k).reduce((a, b) => a + b, 0) / total).toFixed(4));
+    // Herfindahl–Hirschman index on shares, 0..1. 1 means one participant holds all.
+    const hhi = vals.reduce((acc, v) => acc + (v / total) ** 2, 0);
+    return {
+      participants: vals.length,
+      total,
+      top1_share: share(1),
+      top3_share: share(3),
+      top10_share: share(10),
+      hhi: Number(hhi.toFixed(4)),
+    };
+  };
+
+  const named = (m: Map<string, number>) =>
+    [...m.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([pubkey, value]) => ({
+        pubkey,
+        node_name: rows.find((r) => r.pubkey === pubkey)?.node_name || null,
+        value,
+      }));
+
+  return {
+    scope: {
+      nodes_in_gossip: rows.length,
+      announced_open_channels: chans.length,
+      note:
+        'Covers only channels currently announced in gossip, because node identity exists nowhere else. It is not the whole archive — compare /summary.channels.open.',
+      why_participants_can_exceed_nodes:
+        'A channel keeps both pubkeys after a node stops announcing itself, so `participants` counts every pubkey holding an announced open channel and can exceed `nodes_in_gossip`. Neither number is wrong; they answer different questions.',
+    },
+    by_capacity_shannons: { ...(measure(cap) ?? {}), top: named(cap) },
+    by_channel_count: { ...(measure(cnt) ?? {}), top: named(cnt) },
+    caveats: [
+      'A concentration figure over a handful of nodes is arithmetic, not economics. Read `participants` first.',
+      'On testnet two nodes form a test harness holding an order of magnitude more channels than any real participant; they dominate every ranking here.',
+      'Capacity is an upper bound, never a balance (A+04).',
+    ],
+  };
+}
+
+/**
+ * Force-closes whose commitment cell has never been seen spent.
+ *
+ * A force-close puts funds in a commitment cell; until that cell is spent, they
+ * have not moved. These are the channels where that has not happened — on mainnet a
+ * genuine operational alert, on testnet mostly abandoned experiments. Served as a
+ * list rather than a count so it is actionable, and dated so age is visible.
+ *
+ * "Never seen spent" is a statement about this archive, not proof funds are stuck:
+ * a spend in a block after the scan's cursor would not be here yet.
+ */
+function unresolved(c: Ctx) {
+  const limit = intParam(c.url, 'limit', DEFAULT_LIMIT, MAX_LIMIT);
+  const offset = intParam(c.url, 'offset', 0, Number.MAX_SAFE_INTEGER);
+  const rows = all<Record<string, unknown>>(
+    c.net,
+    `SELECT cc.commitment_outpoint, cc.channel_outpoint, cc.created_tx_hash, cc.created_block,
+            cc.capacity AS capacity_shannons,
+            ch.node1_pubkey, ch.node2_pubkey,
+            bt.timestamp_ms AS created_block_timestamp_ms
+       FROM commitment_cell cc
+       LEFT JOIN channel ch ON ch.channel_outpoint = cc.channel_outpoint
+       ${timeJoin('bt', 'cc.created_block')}
+      WHERE cc.spend_kind IS NULL
+      ORDER BY cc.created_block DESC, cc.commitment_outpoint
+      LIMIT ? OFFSET ?`,
+    limit,
+    offset,
+  );
+  const total = one<{ n: number; oldest: number | null }>(
+    c.net,
+    `SELECT COUNT(*) AS n, MIN(bt.timestamp_ms) AS oldest
+       FROM commitment_cell cc LEFT JOIN block_time bt ON bt.block_number = cc.created_block
+      WHERE cc.spend_kind IS NULL`,
+  )!;
+  const now = Date.now();
+  return {
+    total: total.n,
+    limit,
+    offset,
+    oldest_created_at: total.oldest ? new Date(total.oldest).toISOString() : null,
+    what_this_is:
+      'Commitment cells created by a force-close that this archive has never seen spent. Funds in them have not moved. This is a statement about our scan, not proof that they are permanently stuck.',
+    commitment_cells: rows.map((r) => {
+      const withDate = decimalCapacity(withTime(r, 'created_block'));
+      const at = withDate['created_block_at'];
+      return {
+        ...withDate,
+        age_days:
+          typeof at === 'string' ? Number(((now - Date.parse(at)) / 86400000).toFixed(1)) : null,
+      };
+    }),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Reliability
 // ---------------------------------------------------------------------------
@@ -533,6 +770,7 @@ function node(c: Ctx, pubkey: string) {
     },
     live_policy: nodePolicy(c, pubkey),
     location: nodeLocations(c, (n['addresses_json'] as string | null) ?? null),
+    uptime: nodeUptime(c, pubkey),
     capacity_is_not_balance:
       'capacity_shannons is the channel total, an upper bound. Fiber does not broadcast balances, so no field here is spendable liquidity (SPEC-ATLAS §5.1, A+04).',
     faultline: reliability(c.net, pubkey, w),
@@ -1035,12 +1273,15 @@ export function createApi(
             '/v0/{network}/liveness',
             '/v0/{network}/distribution',
             '/v0/{network}/geo',
+            '/v0/{network}/activity',
+            '/v0/{network}/concentration',
             '/v0/{network}/channels?status=open|closed',
             '/v0/{network}/channels/{outpoint}',
             '/v0/{network}/channels/{outpoint}/updates',
             '/v0/{network}/faultline/events?kind=penalty|force_close|cooperative_close&after={cursor}',
             '/v0/{network}/faultline/penalties',
             '/v0/{network}/faultline/timing',
+            '/v0/{network}/faultline/unresolved',
             '/v0/{network}/faultline/nodes/{pubkey}',
           ],
           reading_the_data: {
@@ -1146,6 +1387,8 @@ export function createApi(
       if (rest.length === 1 && rest[0] === 'liveness') return wrap(liveness(c));
       if (rest.length === 1 && rest[0] === 'distribution') return wrap(distribution(c));
       if (rest.length === 1 && rest[0] === 'geo') return wrap(geo(c));
+      if (rest.length === 1 && rest[0] === 'activity') return wrap(activity(c));
+      if (rest.length === 1 && rest[0] === 'concentration') return wrap(concentration(c));
       if (rest.length === 1 && rest[0] === 'channels') return wrap(channels(c));
       if (rest.length === 2 && rest[0] === 'channels') {
         const ch = channel(c, rest[1] as string);
@@ -1168,6 +1411,9 @@ export function createApi(
         // an `error` key that a happy path would parse straight past.
         if ('error' in body) return send(res, 400, { network: net.name, ...body });
         return wrap(body);
+      }
+      if (rest.length === 2 && rest[0] === 'faultline' && rest[1] === 'unresolved') {
+        return wrap(unresolved(c));
       }
       if (rest.length === 2 && rest[0] === 'faultline' && rest[1] === 'timing') {
         return wrap(faultlineTiming(c));
