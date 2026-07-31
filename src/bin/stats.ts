@@ -54,21 +54,27 @@ if (cc.spent > 0) {
 }
 
 console.log('\nEVENT FEED');
-for (const r of q<{ kind: string; n: number; attributed: number }>(`
-  SELECT kind, COUNT(*) AS n, SUM(channel_outpoint IS NOT NULL) AS attributed
-  FROM event GROUP BY kind ORDER BY n DESC`)) {
-  console.log(`  ${r.kind.padEnd(20)} ${String(r.n).padStart(6)}   attributed ${pct(r.attributed, r.n)}`);
+for (const r of q<{ kind: string; n: number; node_pair: number }>(`
+  SELECT kind, COUNT(*) AS n, SUM(attribution = 'node_pair') AS node_pair
+  FROM event_attributed GROUP BY kind ORDER BY n DESC`)) {
+  console.log(
+    `  ${r.kind.padEnd(20)} ${String(r.n).padStart(6)}   node-attributed ${pct(r.node_pair, r.n)}`,
+  );
 }
 
-// The join hit rate bounds Faultline's real coverage (SPEC-FAULTLINE §2.3) and is a
-// published metric, not an internal detail. At this phase it is channel-level only;
-// node-level attribution arrives with the gossip graph in Phase 3.
-const ev = one<{ n: number; attributed: number }>(
-  'SELECT COUNT(*) AS n, SUM(channel_outpoint IS NOT NULL) AS attributed FROM event',
-);
+// The published coverage figure (SPEC-FAULTLINE §2.3). Reported at the level that
+// bounds a per-node claim, because that is the only level a consumer can act on:
+// knowing which channel closed names nobody. See ATTRIBUTION_VIEW in db.ts.
+const ev = one<{ n: number; node_pair: number; channel: number; unatt: number }>(`
+  SELECT COUNT(*) AS n,
+         SUM(attribution = 'node_pair')    AS node_pair,
+         SUM(attribution = 'channel')      AS channel,
+         SUM(attribution = 'unattributed') AS unatt
+  FROM event_attributed`);
 console.log(`\n  total events         ${ev.n}`);
-console.log(`  channel-attributed   ${ev.attributed}  (${pct(ev.attributed, ev.n)})`);
-console.log(`  quarantined          ${ev.n - ev.attributed}  (retained, never dropped — F+04)`);
+console.log(`  node-attributed      ${ev.node_pair}  (${pct(ev.node_pair, ev.n)})  <- PUBLISHED COVERAGE`);
+console.log(`  channel only         ${ev.channel}  (${pct(ev.channel, ev.n)})  real events, no node pair`);
+console.log(`  quarantined          ${ev.unatt}  (retained, never dropped — F+04)`);
 
 if (cc.penalty > 0) {
   console.log('\nPENALTIES (provable misbehaviour — strongest negative signal)');

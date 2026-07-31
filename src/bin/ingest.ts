@@ -84,7 +84,18 @@ async function once(): Promise<void> {
   const rev = j.l1 === 0 ? 'n/a' : `${((j.both / j.l1) * 100).toFixed(1)}%`;
   console.log(`  peers=${peers}  gossip=${j.gossip} l1=${j.l1} overlap=${j.both}`);
   console.log(`    gossip->L1 ${fwd}  (join integrity; converges to ~100%)`);
-  console.log(`    L1->gossip ${rev}  (ATTRIBUTION COVERAGE — bounded by private channels)`);
+  console.log(`    L1->gossip ${rev}  (channel population that is public)`);
+
+  // The channel ratio above is not the coverage figure — most L1 channels closed
+  // before we ever synced. What a consumer can act on is the share of *events* that
+  // name a node pair, which only grows as we keep observing (SPEC-FAULTLINE §2.3).
+  const e = store.db
+    .prepare(
+      `SELECT COUNT(*) AS n, SUM(attribution = 'node_pair') AS np FROM event_attributed`,
+    )
+    .get() as { n: number; np: number };
+  const cov = e.n === 0 ? 'n/a' : `${((e.np / e.n) * 100).toFixed(2)}%`;
+  console.log(`    events node-attributed ${e.np}/${e.n} = ${cov}  <- PUBLISHED COVERAGE`);
 }
 
 try {

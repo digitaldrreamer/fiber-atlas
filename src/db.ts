@@ -109,6 +109,9 @@ CREATE TABLE IF NOT EXISTS event (
   block_number           INTEGER NOT NULL,
   tx_hash                TEXT NOT NULL,
   channel_outpoint       TEXT,
+  -- DEPRECATED — do not read. Records only whether channel_outpoint was non-null at
+  -- insert time, which is "we identified the channel", NOT the SPEC-FAULTLINE §3
+  -- attribution level. Read event_attributed.attribution instead.
   attribution_confidence TEXT NOT NULL CHECK (attribution_confidence IN ('channel','unattributed')),
   detail                 TEXT,
   detected_at            INTEGER NOT NULL,
@@ -116,6 +119,7 @@ CREATE TABLE IF NOT EXISTS event (
 );
 CREATE INDEX IF NOT EXISTS idx_event_block ON event(block_number);
 CREATE INDEX IF NOT EXISTS idx_event_kind ON event(kind);
+CREATE INDEX IF NOT EXISTS idx_event_outpoint ON event(channel_outpoint);
 
 -- ---------------------------------------------------------------------------
 -- Atlas: the gossip graph (SPEC-ATLAS §3).
@@ -161,6 +165,45 @@ CREATE TABLE IF NOT EXISTS gossip_sync (
 );
 `;
 
+/**
+ * Attribution level, derived — never stored.
+ *
+ * SPEC-FAULTLINE §3 grades attribution by *who* an event can be pinned on. Knowing
+ * the `channel_outpoint` is not that: it says which channel, not which nodes. The
+ * node pair only exists if the channel is in the gossip graph, and gossip carries
+ * only live, public channels (§2.3).
+ *
+ * Conflating the two overstates coverage by more than an order of magnitude — on
+ * testnet, 70% of events have an outpoint while 2.2% have a node pair. That is the
+ * precise error §2.3 was written to forbid, so the honest figure is computed rather
+ * than trusted to a column.
+ *
+ * Deriving it also fixes a staleness bug by construction. Gossip membership is not
+ * fixed: a channel absent today becomes attributable the moment we observe it while
+ * still open. A value frozen at insert time can only decay — the same failure that
+ * made `reconcileAttribution()` necessary for `channel_outpoint`.
+ *
+ *   node_pair    — outpoint known AND the channel is in gossip. Attributable to
+ *                  {node1, node2}. THIS is the coverage figure Faultline publishes.
+ *   channel      — outpoint known, channel absent from gossip. A real, verifiable
+ *                  on-chain event that names no node. Private, or closed before we
+ *                  first synced.
+ *   unattributed — no outpoint. Quarantined, never dropped (F+04).
+ */
+const ATTRIBUTION_VIEW = `
+CREATE VIEW IF NOT EXISTS event_attributed AS
+SELECT e.id, e.kind, e.block_number, e.tx_hash, e.channel_outpoint, e.detail,
+       e.detected_at,
+       c.node1_pubkey, c.node2_pubkey,
+       CASE
+         WHEN e.channel_outpoint IS NULL   THEN 'unattributed'
+         WHEN c.node1_pubkey IS NOT NULL   THEN 'node_pair'
+         ELSE 'channel'
+       END AS attribution
+  FROM event e
+  LEFT JOIN channel c ON c.channel_outpoint = e.channel_outpoint;
+`;
+
 export class Store {
   readonly db: DatabaseSync;
 
@@ -173,6 +216,8 @@ export class Store {
     this.db.exec('PRAGMA busy_timeout = 30000;');
     this.db.exec(SCHEMA);
     this.#migrate();
+    // After #migrate: the view reads channel.node1_pubkey, which migration adds.
+    this.db.exec(ATTRIBUTION_VIEW);
   }
 
   /**
@@ -550,6 +595,22 @@ export class Store {
       )
       .run();
     return Number(res.changes);
+  }
+
+  /**
+   * Event counts by attribution level, overall and per kind.
+   *
+   * `node_pair` is the only row that supports a per-node claim; see ATTRIBUTION_VIEW.
+   */
+  attributionBreakdown(): { kind: string; attribution: string; n: number }[] {
+    return this.db
+      .prepare(
+        `SELECT kind, attribution, COUNT(*) AS n
+           FROM event_attributed
+          GROUP BY kind, attribution
+          ORDER BY kind, attribution`,
+      )
+      .all() as { kind: string; attribution: string; n: number }[];
   }
 
   transaction<T>(fn: () => T): T {
