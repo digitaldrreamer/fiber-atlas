@@ -51,6 +51,27 @@ Grounded in what Fiber's RPC and CKB L1 genuinely expose (see [`specs/`](./specs
 
 ---
 
+## What it has found so far
+
+The full L1 history of both networks has been scanned. These numbers are not published anywhere else, and producing them cost **zero CKB** — Faultline is read-only.
+
+**Fiber mainnet, entire history** (2025-02-28 → 2026-07-31, blocks 15,514,828–20,016,810):
+
+| | |
+|---|---|
+| Channels ever opened | **247** (35 still open) |
+| Closed cooperatively | 206 — **97.2%** |
+| Force-closed | 6 — **2.8%** |
+| **Penalties, ever** | **0** |
+
+Mainnet Fiber has never had a penalty: in seventeen months, no party has broadcast a revoked commitment and been swept. That absence is the kind of claim only a complete on-chain scan can establish, and it is unforgeable.
+
+**Testnet tells the opposite story, and that is the point.** Across 44,133 channels its aggregate force-close rate is 42.1% — but that figure describes no period anyone operates in. It is concentrated in a single era, blocks 18.1M–19.9M (2025-08 → 2026-01), peaking at 92%, with a 0.5–2% baseline either side. Penalties follow the same curve and stop after it.
+
+Two rules follow, and both are normative in the spec: **every published figure names its network**, and **reliability rates are windowed**, never lifetime aggregates. A lifetime number would permanently condemn every node that was online in late 2025. See [`SPEC-FAULTLINE.md`](./specs/SPEC-FAULTLINE.md) §4.1–§4.2.
+
+---
+
 ## What it does NOT claim (honest boundaries)
 
 These are hard limits of the available data, not TODOs:
@@ -108,13 +129,13 @@ This is cheaper than it sounds: the Fiber node needs **no local CKB chain sync**
 
 ## Build plan
 
-- [`plan.md`](./plan.md) — the scoped ~2.5-day hackathon build: core vs stretch vs dropped, stack, day-by-day milestones, and the demo script.
+- [`plan.md`](./plan.md) — verified prerequisites, architecture consequences, and the phased build.
 
 ---
 
 ## Status
 
-Early — hackathon build in progress. Specs first; implementation tracked in [`plan.md`](./plan.md).
+In progress, as an ongoing project. Working today: the L1 scanner and classifier (both networks, full history backfilled), the gossip ingest, and the join between them. Not yet built: the HTTP API and dashboard. Tracked in [`plan.md`](./plan.md).
 
 ## License
 
@@ -161,3 +182,37 @@ The scan is resumable: an indexer cursor is persisted per pass after each page, 
 **The crawl is paid once, ever.** A full history backfill is ~190,000 RPC round-trips (83,249 funding-lock + 106,841 commitment-lock transactions on testnet as of 2026-07-31). Both the raw transactions *and* the indexer's grouping are archived, so any later change to a classification rule — or any field a future phase needs that this one did not extract — is a local `npm run replay`, never another crawl. `replay` is wired to an unreachable RPC so it cannot silently fall back to the network.
 
 > **An empty scan is a configuration failure, not a quiet network.** Lock code hashes differ between testnet and mainnet, and a scanner pointed at the wrong set returns zero results indistinguishably from "nothing happened". The scanner preflights both hashes and refuses to start if either indexes nothing.
+
+Mainnet is far smaller and costs almost nothing to scan — 459 funding-lock and 15 commitment-lock transactions for its entire history, well under a minute:
+
+```bash
+FIBER_NETWORK=mainnet CKB_RPC_URL=https://mainnet.ckbapp.dev/ \
+  FIBER_ATLAS_DB=./data/fiber-atlas.mainnet.db npm run scan
+```
+
+---
+
+## Running the whole thing with Docker
+
+Both networks run **side by side** — six services: an `fnn` gossip node, an ingest loop, and an L1 scan loop for each of testnet and mainnet.
+
+This is deliberately not a network toggle. Testnet and mainnet tell opposite stories, so infrastructure that had to be *configured* to one network would eventually serve it labelled as the other. Each network gets its own node, its own SQLite file, and its own loops; nothing is shared.
+
+```bash
+cp docker/.env.example docker/.env
+# set FIBER_SECRET_KEY_PASSWORD (openssl rand -hex 32)
+# set ATLAS_UID/ATLAS_GID to your own: id -u / id -g
+
+docker compose -f docker/compose.yml up -d
+docker compose -f docker/compose.yml --profile tools run --rm stats-mainnet
+```
+
+### It holds no funds, on either network
+
+Gossip is a broadcast protocol: a node with **zero channels and zero CKB** sees the entire public graph. Fiber Atlas never sends a payment, so it never needs a channel. Three properties are enforced in `docker/fnn-entrypoint.sh` rather than left to a config file:
+
+1. **Never announces itself.** An announced observer injects a non-routable phantom node into the graph it is measuring. Mainnet's upstream config ships `announce_listening_addr: true`, so this must be actively flipped.
+2. **Never auto-accepts channels.** `auto_accept_channel_ckb_funding_amount` belongs to `fnn`, not to us, and its **default is on at 99 CKB**. Upstream's config omits the key entirely, so absence means enabled — the entrypoint *inserts* `0`. Deleting that line re-enables it.
+3. **Wallet key is random and unfunded.** This is the actual guarantee. A key holding nothing cannot spend however any flag is set; configuration is the second line of defence, not the first.
+
+The `fnn` version is pinned via `FNN_VERSION` and **must track what the network runs, not `releases/latest`** — the 0.9.x line ships as pre-releases while `latest` still resolves to 0.8.1. A node on the wrong version does not error: it peers with nobody and keeps serving a frozen graph. Check the `version` distribution in `graph_nodes` before bumping it (see [`plan.md`](./plan.md) §1.2).

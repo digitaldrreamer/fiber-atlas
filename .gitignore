@@ -8,3 +8,6 @@ data/
 
 # local Fiber node: binary, KEYS, chain state — never commit
 .fnn/
+
+# docker local env (holds FIBER_SECRET_KEY_PASSWORD)
+docker/.env

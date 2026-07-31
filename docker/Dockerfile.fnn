@@ -1,0 +1,49 @@
+# Fiber Network Node — observe-only.
+#
+# VERSION PINNING IS LOAD-BEARING. See plan.md §1.2: `releases/latest` resolves to
+# the newest *stable* tag, but the 0.9.0 line ships as pre-releases and is what the
+# network actually runs. A node on the wrong version does not error — it peers with
+# nobody, keeps answering graph RPCs from a frozen subgraph, and every derived metric
+# computes cleanly over stale data. Check the `version` distribution in `graph_nodes`
+# before changing this, not the GitHub releases page.
+ARG FNN_VERSION=v0.9.0-rc7
+
+FROM debian:bookworm-slim AS fetch
+ARG FNN_VERSION
+ARG TARGETARCH
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /out
+RUN set -eux; \
+    case "${TARGETARCH}" in \
+      amd64) arch=x86_64 ;; \
+      arm64) arch=aarch64 ;; \
+      *) echo "unsupported arch: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    url="https://github.com/nervosnetwork/fiber/releases/download/${FNN_VERSION}/fnn_${FNN_VERSION}-${arch}-linux-portable.tar.gz"; \
+    curl -fsSL "$url" -o fnn.tar.gz; \
+    tar -xzf fnn.tar.gz --strip-components=1; \
+    chmod +x fnn; \
+    ./fnn --version; \
+    test -f config/testnet/config.yml && test -f config/mainnet/config.yml
+
+FROM debian:bookworm-slim
+ARG FNN_VERSION
+LABEL org.opencontainers.image.title="fiber-atlas-fnn" \
+      org.opencontainers.image.description="Observe-only Fiber node for Fiber Atlas gossip ingest" \
+      fiber.atlas.fnn-version="${FNN_VERSION}"
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates openssl \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd -r -u 10001 -m -d /home/fnn fnn
+COPY --from=fetch /out/fnn /usr/local/bin/fnn
+# Upstream per-network configs — the source of the FundingLock / CommitmentLock
+# code hashes, kept in lockstep with the pinned binary (SPEC-FAULTLINE §2.1).
+COPY --from=fetch /out/config /opt/fnn/config
+COPY docker/fnn-entrypoint.sh /usr/local/bin/fnn-entrypoint.sh
+RUN chmod +x /usr/local/bin/fnn-entrypoint.sh
+
+# Node state (keys, chain store). Mounted as a volume so keys outlive the container.
+ENV FNN_BASE_DIR=/data/fnn
+USER fnn
+EXPOSE 8227
+ENTRYPOINT ["/usr/local/bin/fnn-entrypoint.sh"]

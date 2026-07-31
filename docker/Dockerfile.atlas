@@ -1,0 +1,30 @@
+# Fiber Atlas — scanner and gossip ingest.
+#
+# No build step and no `npm install`: the project has zero runtime dependencies.
+# Node 24 executes TypeScript directly (strip-only) and ships `node:sqlite` built in.
+# That is why source is copied straight in — there is nothing to compile.
+#
+# Strip-only mode has one consequence worth remembering when editing src/: it erases
+# types without evaluating them, so constructs that emit runtime code — parameter
+# properties, enums, namespaces, decorators — are rejected. Fields are declared
+# explicitly instead.
+FROM node:24-slim
+
+LABEL org.opencontainers.image.title="fiber-atlas" \
+      org.opencontainers.image.description="Network-wide Fiber gossip visibility and on-chain reliability feed"
+
+RUN useradd -r -u 10002 -m -d /home/atlas atlas
+WORKDIR /app
+
+COPY package.json ./
+COPY src ./src
+
+# SQLite lives on a mounted volume shared with the host; the container user must own it.
+RUN mkdir -p /data && chown -R atlas:atlas /data /app
+USER atlas
+
+ENV FIBER_ATLAS_DB=/data/fiber-atlas.db \
+    NODE_OPTIONS="--experimental-sqlite --disable-warning=ExperimentalWarning"
+
+# Overridden per service in compose.yml (scan / ingest, per network).
+CMD ["node", "src/bin/stats.ts"]

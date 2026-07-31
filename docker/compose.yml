@@ -1,0 +1,136 @@
+# Fiber Atlas — both networks, side by side.
+#
+# Deliberately NOT a network toggle. Testnet and mainnet tell opposite stories
+# (SPEC-FAULTLINE §4.1 vs §4.2: 42% force-close over testnet history against 2.8%
+# lifetime on mainnet, which has never seen a penalty). Public infrastructure that
+# had to be *configured* to a network would eventually serve one labelled as the
+# other. Both stacks run; every figure carries its network.
+#
+# Each network gets its own fnn instance, its own SQLite file, and its own ingest
+# and scan loops. Nothing is shared, so one network's outage cannot corrupt the
+# other's numbers.
+#
+#   docker compose -f docker/compose.yml up -d
+#   docker compose -f docker/compose.yml run --rm stats-mainnet
+#
+# Cost: zero CKB. Faultline is read-only RPC; the gossip nodes hold no funds and
+# open no channels. See docker/fnn-entrypoint.sh.
+
+name: fiber-atlas
+
+# `data/` is a bind mount, so the container writes as a host uid. Defaults to 1000
+# (the usual first human user); override ATLAS_UID/ATLAS_GID in docker/.env if yours
+# differs, or SQLite fails with "attempt to write a readonly database".
+#   echo "ATLAS_UID=$(id -u)" >> docker/.env && echo "ATLAS_GID=$(id -g)" >> docker/.env
+x-atlas: &atlas
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile.atlas
+  image: fiber-atlas/atlas:latest
+  user: "${ATLAS_UID:-1000}:${ATLAS_GID:-1000}"
+  volumes:
+    - ../data:/data
+
+x-fnn-build: &fnn-build
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile.fnn
+    args:
+      # See plan.md §1.2 — pin what the network runs, not releases/latest.
+      FNN_VERSION: ${FNN_VERSION:-v0.9.0-rc7}
+
+services:
+  # ---------------------------------------------------------------- testnet ---
+  fnn-testnet:
+    <<: *fnn-build
+    image: fiber-atlas/fnn:${FNN_VERSION:-v0.9.0-rc7}
+    restart: unless-stopped
+    environment:
+      FIBER_NETWORK: testnet
+      CKB_RPC_URL: ${TESTNET_CKB_RPC_URL:-https://testnet.ckbapp.dev/}
+      FIBER_SECRET_KEY_PASSWORD: ${FIBER_SECRET_KEY_PASSWORD:?set it in docker/.env}
+    volumes:
+      - fnn-testnet:/data/fnn
+
+  ingest-testnet:
+    <<: *atlas
+    restart: unless-stopped
+    depends_on: [fnn-testnet]
+    environment:
+      FIBER_NETWORK: testnet
+      FIBER_RPC_URL: http://fnn-testnet:8227
+      FIBER_ATLAS_DB: /data/fiber-atlas.testnet.db
+    command: ["node", "src/bin/ingest.ts", "--watch", "--interval", "120"]
+
+  scan-testnet:
+    <<: *atlas
+    restart: unless-stopped
+    environment:
+      FIBER_NETWORK: testnet
+      CKB_RPC_URL: ${TESTNET_CKB_RPC_URL:-https://testnet.ckbapp.dev/}
+      FIBER_ATLAS_DB: /data/fiber-atlas.testnet.db
+      SCAN_INTERVAL: ${SCAN_INTERVAL:-3600}
+    # The scan is cursor-persisted and resumable, so re-running is cheap: it picks up
+    # where it stopped rather than re-crawling. Sleeping between passes keeps the
+    # archive current without hammering a public endpoint.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - 'while true; do node src/bin/scan.ts || echo "scan pass failed; retrying"; sleep "$$SCAN_INTERVAL"; done'
+
+  # ---------------------------------------------------------------- mainnet ---
+  fnn-mainnet:
+    <<: *fnn-build
+    image: fiber-atlas/fnn:${FNN_VERSION:-v0.9.0-rc7}
+    restart: unless-stopped
+    environment:
+      FIBER_NETWORK: mainnet
+      CKB_RPC_URL: ${MAINNET_CKB_RPC_URL:-https://mainnet.ckbapp.dev/}
+      FIBER_SECRET_KEY_PASSWORD: ${FIBER_SECRET_KEY_PASSWORD:?set it in docker/.env}
+    volumes:
+      - fnn-mainnet:/data/fnn
+
+  ingest-mainnet:
+    <<: *atlas
+    restart: unless-stopped
+    depends_on: [fnn-mainnet]
+    environment:
+      FIBER_NETWORK: mainnet
+      FIBER_RPC_URL: http://fnn-mainnet:8227
+      FIBER_ATLAS_DB: /data/fiber-atlas.mainnet.db
+    command: ["node", "src/bin/ingest.ts", "--watch", "--interval", "120"]
+
+  scan-mainnet:
+    <<: *atlas
+    restart: unless-stopped
+    environment:
+      FIBER_NETWORK: mainnet
+      CKB_RPC_URL: ${MAINNET_CKB_RPC_URL:-https://mainnet.ckbapp.dev/}
+      FIBER_ATLAS_DB: /data/fiber-atlas.mainnet.db
+      SCAN_INTERVAL: ${SCAN_INTERVAL:-3600}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - 'while true; do node src/bin/scan.ts || echo "scan pass failed; retrying"; sleep "$$SCAN_INTERVAL"; done'
+
+  # ------------------------------------------------------- on-demand reports ---
+  # `docker compose -f docker/compose.yml run --rm stats-mainnet`
+  stats-testnet:
+    <<: *atlas
+    profiles: ["tools"]
+    environment:
+      FIBER_NETWORK: testnet
+      FIBER_ATLAS_DB: /data/fiber-atlas.testnet.db
+    command: ["node", "src/bin/stats.ts"]
+
+  stats-mainnet:
+    <<: *atlas
+    profiles: ["tools"]
+    environment:
+      FIBER_NETWORK: mainnet
+      FIBER_ATLAS_DB: /data/fiber-atlas.mainnet.db
+    command: ["node", "src/bin/stats.ts"]
+
+volumes:
+  # fnn keys and chain state. Named volumes, not bind mounts: these hold private
+  # keys and must never land in the repo tree (see the .fnn incident in git history).
+  fnn-testnet:
+  fnn-mainnet:
