@@ -149,6 +149,34 @@ The consequences are normative:
 
 Provenance: `src/bin/stats.ts` over `data/fiber-atlas.testnet.db`, funding scan complete. Penalty counts were taken while the `CommitmentLock` scan was still in progress and are lower bounds; the era *shape* is stable but absolute penalty totals will rise.
 
+### 4.2 Mainnet — the complete history, and it is healthy
+
+Testnet is where things break on purpose. Mainnet is the network anyone actually decides about, and its entire history fits in one scan of well under a minute.
+
+Full L1 backfill of both mainnet scripts, blocks 15,514,828 – 20,016,810 (**2025-02-28 → 2026-07-31**, first Fiber channel to present):
+
+| Metric | Mainnet | Testnet |
+|--------|---------|---------|
+| Channels ever opened | **247** | 44,133 |
+| Still open | 35 | 5,017 |
+| Closed | 212 | 39,116 |
+| — cooperative | 206 (**97.2%**) | 57.9% |
+| — force-close | 6 (**2.8%**) | 42.1% |
+| Commitment cells spent | 8 | 28,320 |
+| — **penalties** | **0** | 1,768+ |
+
+**Fiber mainnet has never had a penalty.** In seventeen months no party has broadcast a revoked commitment and been swept. Force closes run at 2.8% of closes — six events, total.
+
+This is the project's first genuinely novel published number, and it carries three consequences:
+
+- **The testnet distribution must never be quoted as Fiber's.** §4.1's 42% aggregate is a testnet artifact of a testnet era. Mainnet, over its whole life, is 2.8%. Any figure Faultline publishes MUST name its network.
+- **A reliability feed whose current answer is "clean" is still doing its job.** The value is the *provability* of the absence, not the presence of alarms. That absence is exactly what cannot be established without a complete on-chain scan, and it is unforgeable.
+- **Mainnet scanning is nearly free.** 459 funding-lock and 15 commitment-lock transactions in total — the entire history costs one short scan against a public RPC and **zero CKB**. There is no cost argument for testnet-only coverage.
+
+> Attribution reads 0% here, and the reason is structural, not a defect: gossip carries live channels, and the 212 closed ones left it before any observer existed. Detection over the full history is nonetheless complete. See §3.1.
+
+Provenance: `src/bin/scan.ts` + `stats.ts` against `https://mainnet.ckbapp.dev/`, `FIBER_NETWORK=mainnet`, 2026-07-31. Mainnet code hashes verified against [`config/mainnet/config.yml` @ v0.9.0-rc7](https://github.com/nervosnetwork/fiber/blob/v0.9.0-rc7/config/mainnet/config.yml).
+
 ---
 
 ## 5. Why This Is the Only Honest Reliability Source
