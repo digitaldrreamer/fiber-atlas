@@ -56,9 +56,14 @@ services:
     <<: *atlas
     restart: unless-stopped
     depends_on: [fnn-testnet]
+    # Shares the node's network namespace so it can reach the loopback-only RPC.
+    # fnn refuses to bind a public interface without a biscuit keypair, and that
+    # refusal is right — the RPC controls funds. Sharing the namespace satisfies it
+    # without configuring auth, and keeps the RPC unreachable from the Docker network.
+    network_mode: "service:fnn-testnet"
     environment:
       FIBER_NETWORK: testnet
-      FIBER_RPC_URL: http://fnn-testnet:8227
+      FIBER_RPC_URL: http://127.0.0.1:8227
       FIBER_ATLAS_DB: /data/fiber-atlas.testnet.db
     command: ["node", "src/bin/ingest.ts", "--watch", "--interval", "120"]
 
@@ -93,9 +98,14 @@ services:
     <<: *atlas
     restart: unless-stopped
     depends_on: [fnn-mainnet]
+    # Shares the node's network namespace so it can reach the loopback-only RPC.
+    # fnn refuses to bind a public interface without a biscuit keypair, and that
+    # refusal is right — the RPC controls funds. Sharing the namespace satisfies it
+    # without configuring auth, and keeps the RPC unreachable from the Docker network.
+    network_mode: "service:fnn-mainnet"
     environment:
       FIBER_NETWORK: mainnet
-      FIBER_RPC_URL: http://fnn-mainnet:8227
+      FIBER_RPC_URL: http://127.0.0.1:8227
       FIBER_ATLAS_DB: /data/fiber-atlas.mainnet.db
     command: ["node", "src/bin/ingest.ts", "--watch", "--interval", "120"]
 

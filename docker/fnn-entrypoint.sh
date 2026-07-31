@@ -52,9 +52,11 @@ if [ ! -f "$CONFIG" ]; then
   # the insert restores upstream's 99 CKB behaviour.
   sed -i '/^fiber:/a\  auto_accept_channel_ckb_funding_amount: 0' "$CONFIG"
 
-  # Bind the RPC to the container network so sibling services can reach it. Unambiguous:
-  # fiber.listening_addr is a multiaddr, only rpc.listening_addr uses host:port form.
-  sed -i 's|^\( *\)listening_addr: "127.0.0.1:8227"|\1listening_addr: "0.0.0.0:8227"|' "$CONFIG"
+  # The RPC stays on loopback, deliberately. fnn refuses to bind a public interface
+  # without a biscuit keypair — that RPC controls funds, so the refusal is correct and
+  # we do not work around it by configuring auth. The ingest container instead shares
+  # this container's network namespace (`network_mode: service:` in compose.yml), so
+  # it reaches 127.0.0.1:8227 while nothing on the Docker network can.
 
   if [ -n "${CKB_RPC_URL:-}" ]; then
     sed -i "s|^\( *\)rpc_url: .*|\1rpc_url: \"${CKB_RPC_URL}\"|" "$CONFIG"

@@ -22,7 +22,10 @@ RUN set -eux; \
     esac; \
     url="https://github.com/nervosnetwork/fiber/releases/download/${FNN_VERSION}/fnn_${FNN_VERSION}-${arch}-linux-portable.tar.gz"; \
     curl -fsSL "$url" -o fnn.tar.gz; \
-    tar -xzf fnn.tar.gz --strip-components=1; \
+    # No --strip-components: the archive has no top-level directory. `fnn`,
+    # `fnn-cli` and `config/` sit at the root, so stripping a component drops
+    # the binaries entirely and flattens config/<network>/ to <network>/.
+    tar -xzf fnn.tar.gz; \
     chmod +x fnn; \
     ./fnn --version; \
     test -f config/testnet/config.yml && test -f config/mainnet/config.yml
@@ -43,7 +46,12 @@ COPY docker/fnn-entrypoint.sh /usr/local/bin/fnn-entrypoint.sh
 RUN chmod +x /usr/local/bin/fnn-entrypoint.sh
 
 # Node state (keys, chain store). Mounted as a volume so keys outlive the container.
+#
+# Created and chowned here, not at runtime: Docker seeds a new named volume from
+# whatever the image has at the mount point, ownership included. Without this the
+# volume materialises root-owned and the unprivileged node cannot write its keys.
 ENV FNN_BASE_DIR=/data/fnn
+RUN mkdir -p /data/fnn && chown -R fnn:fnn /data
 USER fnn
 EXPOSE 8227
 ENTRYPOINT ["/usr/local/bin/fnn-entrypoint.sh"]

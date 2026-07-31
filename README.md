@@ -79,7 +79,14 @@ These are hard limits of the available data, not TODOs:
 - **No live routable liquidity.** Channel *balances* are not broadcast by Fiber (privacy). Atlas shows capacity — an upper bound — not what a channel can carry right now. It improves route selection *probabilistically*; it is a prior, not an oracle.
 - **No payment success rate.** Payment failures are visible only to your own node and carry no per-hop attribution. Faultline is therefore built from **on-chain failures (hard, sparse) + liveness/staleness (soft, plentiful)** — not from a network-wide success/failure ledger.
 - **Force-close ≠ guilt.** Not every force-close is misbehavior (a peer going offline forces one too). Faultline serves *weighted evidence*, not verdicts, and its penalty→force-close→cooperative gradient is a signal hierarchy, not a judgment.
-- **Most channels are invisible to gossip.** Fiber channels can be opened as **private** (`is_public()` is false when `public_channel_info` is unset); private channels are never announced and never carry a `ChannelUpdate`. Measured on CKB testnet 2026-07-31: **925 channels in the gossip graph against 5,017 live funding cells on L1 — only ~18% of currently-open channels are publicly announced.** Atlas therefore describes the *public* graph, not every channel that exists. Faultline, scanning L1, sees all of them — which is why the two halves have very different coverage (see below).
+- **Most channels are invisible to gossip.** Fiber channels can be opened as **private** (`is_public()` is false when `public_channel_info` is unset); private channels are never announced and never carry a `ChannelUpdate`. Measured 2026-07-31, comparing channels that are **both open and announced** against all open funding cells:
+
+  | Network | Open channels | Publicly announced | |
+  |---|---|---|---|
+  | **mainnet** | 35 | 17 | **48.6%** |
+  | testnet | 5,017 | 709 | **14.1%** |
+
+  Atlas therefore describes the *public* graph, not every channel that exists. Faultline, scanning L1, sees all of them — which is why the two halves have very different coverage. Note that mainnet is roughly 3.5× more announced than testnet, so node-level attribution is substantially more viable there than the testnet figure alone would suggest.
 - **Node-level attribution is bounded by that ratio, not by effort.** Faultline detects every close and penalty on L1, public or private. But attributing one to a *node pair* requires the gossip graph, so a private channel's events are permanently attributable only to the channel, never to its nodes. Waiting longer does not fix this; it is structural. The published join rate makes the bound explicit rather than hiding it.
 - **Value is contingent on Fiber's growth.** This is infrastructure for a network that must grow to matter. That is the honest bet.
 

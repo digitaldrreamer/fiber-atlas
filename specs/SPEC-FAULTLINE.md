@@ -68,7 +68,11 @@ Two consequences worth stating plainly:
 Two independent populations are permanently unattributable to a node pair, and both are large:
 
 1. **Channels closed before our node first synced gossip.** The gossip graph carries only *live* channels, so a channel that closed before we observed it was never in it. Historical backfill therefore attributes almost nothing.
-2. **Private channels.** A Fiber channel is public only when `public_channel_info` is set (`is_public()`, `crates/fiber-lib/src/fiber/channel.rs`); private channels are never announced and never carry a `ChannelUpdate`. Measured on CKB testnet 2026-07-31: **925 gossip channels against 5,017 live funding cells — ~18% publicly announced.** No amount of observation time closes this gap. It is structural.
+2. **Private channels.** A Fiber channel is public only when `public_channel_info` is set (`is_public()`, `crates/fiber-lib/src/fiber/channel.rs`); private channels are never announced and never carry a `ChannelUpdate`. Measured 2026-07-31, counting only channels that are **both open and announced** against all open funding cells — mainnet **17/35 = 48.6%**, testnet **709/5,017 = 14.1%**. No amount of observation time closes this gap. It is structural.
+
+   > The comparison must be like-for-like. Dividing *gossip-ever* by *live-now* inflates the ratio, because a channel that closes leaves the gossip graph while remaining in our store: on testnet that reads 975/5,017 ≈ 19% against a true 14.1%. Both terms must be restricted to currently-open channels.
+   >
+   > Mainnet is ~3.5× more announced than testnet. Testnet's ratio is depressed by harness and throwaway channels that have no mainnet analogue, so **testnet understates how attributable the real network is** — the opposite of the usual direction, and a reason not to quote testnet's coverage bound as Fiber's.
 
 > **Normative.** Faultline MUST publish the join rate in **both directions**, because they answer different questions and only one of them bounds attribution:
 > - `gossip → L1` — does every announced channel have a funding cell? Converges to ~100%; an integrity check on the join itself (**A+05**).
