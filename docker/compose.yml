@@ -130,8 +130,12 @@ services:
     environment:
       FIBER_ATLAS_DB_DIR: /data
       PORT: 8080
-    ports:
-      - "${API_PORT:-8080}:8080"
+    # No host port published, deliberately. Publishing would expose the origin at
+    # http://<vps-ip>:8080, letting anyone reach the API while bypassing Cloudflare
+    # — which defeats the point of proxying the DNS record. The reverse proxy
+    # reaches this container over the Docker network instead.
+    expose:
+      - "8080"
     command: ["node", "src/bin/serve.ts"]
 
   # ------------------------------------------------------- on-demand reports ---
