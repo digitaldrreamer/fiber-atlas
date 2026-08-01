@@ -13,8 +13,6 @@ It has two halves:
 
 A node cockpit answers "is my node healthy?" Fiber Atlas answers "which of the other nodes can I trust?", and grounds the answer in CKB L1 events rather than self-reported metrics.
 
-> Built for the **[Gone in 60ms: Fiber Network Infrastructure Hackathon](https://talk.nervos.org/t/gone-in-60ms-fiber-network-infrastructure-hackathon-announcement/10418)** (July 1–15, 2026). Category 3 (Merchant, Liquidity, LSP, Multi-Asset Infrastructure), overlapping Category 2 (Node, Routing, Diagnostics).
-
 ---
 
 ## Where to look
