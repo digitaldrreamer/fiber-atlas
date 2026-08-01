@@ -143,13 +143,15 @@ These are hard limits of the available data, not TODOs:
           │   join on channel_outpoint  →  attributed      │
           │   node + channel reliability records           │
           └───────────────────────┬────────────────────────┘
-                                   │  REST / JSON API
+                                   │  REST / JSON API  (/v0)
                                    ▼
                  ┌───────────────────────────────────┐
-                 │  Dashboard  +  API for wallets,    │
+                 │  web UI  +  API for wallets,       │
                  │  routers, merchants, operators     │
                  └───────────────────────────────────┘
 ```
+
+The UI is drawn as a peer of the other consumers rather than above them: it reads the same public endpoints, with no privileged access to the store.
 
 The **join on `channel_outpoint`** is the core idea: the gossip graph knows *which two nodes* a channel belongs to; CKB L1 knows *what happened to it*. Neither alone is enough; together they produce attributed, unforgeable reliability records.
 
@@ -176,7 +178,7 @@ This is cheaper than it sounds: the Fiber node needs **no local CKB chain sync**
 
 ## Status
 
-In progress, as an ongoing project. Working today: the L1 scanner and classifier (both networks, full history backfilled), the gossip ingest, the join between them, and a read-only HTTP API — deployed and serving both networks at **[fiber-atlas.drreamer.digital](https://fiber-atlas.drreamer.digital)**. Not yet built: the dashboard, and `/lsps` from [`SPEC-ATLAS.md`](./specs/SPEC-ATLAS.md) §6. Tracked in [`plan.md`](./plan.md).
+In progress, as an ongoing project. Working today: the L1 scanner and classifier (both networks, full history backfilled), the gossip ingest, the join between them, a read-only HTTP API, and the web UI over it — deployed and serving both networks at **[fiber-atlas.drreamer.digital](https://fiber-atlas.drreamer.digital)**. Tracked in [`plan.md`](./plan.md).
 
 > Counts served by a network still backfilling are **lower bounds**, not final figures. `/health` reports each network's scan-cursor state so you can tell the difference; a cursor whose `last_advanced_at` keeps moving between polls means the scan is still running.
 
@@ -238,12 +240,14 @@ FIBER_NETWORK=mainnet CKB_RPC_URL=https://mainnet.ckbapp.dev/ \
 ## The API
 
 ```bash
-npm run serve        # http://0.0.0.0:8080, serves every network with a database
+npm run serve        # http://0.0.0.0:8080 — the web UI at /, the API under /v0
 ```
 
 Read-only, zero dependencies, `node:http`. Every route is network-scoped and every response carries its `network` back:
 
 ```
+GET /                                        the web UI (see below)
+GET /v0                                      service index: version, networks, routes
 GET /health
 GET /v0/{network}/summary                    channel counts, penalties, attribution coverage
 GET /v0/{network}/eras                       force-close rate per block era  <- the useful one
@@ -263,6 +267,25 @@ Three of the specs' normative rules are enforced by the response shapes rather t
 - **Counts are never served alone, and there is no lifetime reliability figure.** `/faultline/nodes/{pubkey}` requires a window and returns exposure-normalised rates beside the counts (**F+05**). A lifetime rate would be used, and testnet's is 42% — a number describing no period anyone operates in.
 
 The API opens the SQLite files with SQLite's read-only flag, so a serving process cannot corrupt the archive it shares with the scanner.
+
+> **The service index moved from `/` to `/v0`** when the UI took the root. `/health` and every `/v0/{network}/…` route are unchanged.
+
+---
+
+## The web UI
+
+`web/` is a hash-routed page over the public API — three files, no framework, no build step, no dependencies, served by the same process on the same origin. `npm run serve` mounts it at `/`; set `FIBER_ATLAS_WEB_DIR=""` to serve the API alone, or open `web/index.html` with `?api=https://fiber-atlas.drreamer.digital` to point a local page at a deployed API.
+
+It is a reader of the API, not a privileged client: every figure on screen comes from a documented endpoint, and each page links to the JSON behind it.
+
+The design brief is [`specs/SPEC-FRONTEND.md`](./specs/SPEC-FRONTEND.md). Its §4 rules are constraints on *meaning*, and they are the reason several things on screen look like omissions:
+
+- **The network is in the URL, the header, the footer, and every chart caption.** Testnet's force-close rate is 42% and mainnet's is 2.8%; a screenshot that travels without its label is the failure mode the whole project is shaped to avoid.
+- **The lifetime rate is rendered struck through**, next to its numerator and denominator, and routes to the per-era view. Hiding it would be worse — someone would divide the two counts themselves.
+- **There is no per-node reliability column**, because there is no per-node reliability. Where the API answers `observed: false`, the page prints the absence and the reason. No zero, no green tick, no bar at 0%.
+- **A rate the API suppressed for small n is never drawn as a bar.** The era chart renders those windows as a hatched placeholder carrying the raw count, so the eye is never invited to compare a height that means nothing.
+- **Enabled, disabled and unknown are three states**, kept apart on both the node and channel pages.
+- **Empty is designed, not defaulted.** Mainnet's zero penalties render as a stated finding — the strongest positive claim in the archive — rather than as an empty table.
 
 ---
 

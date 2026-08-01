@@ -18,6 +18,10 @@ WORKDIR /app
 
 COPY package.json ./
 COPY src ./src
+# The web UI is three static files with no build step, for the same reason as the
+# rest of this image: there is nothing to compile. `serve.ts` picks them up from
+# ../../web relative to itself and mounts them at `/`.
+COPY web ./web
 
 # Created and chowned here so the named volume seeds correct ownership: Docker
 # copies the image's content and permissions into a fresh volume on first mount.

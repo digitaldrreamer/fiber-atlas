@@ -22,6 +22,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { Store } from '../db.ts';
 import { routableIps } from '../atlas/multiaddr.ts';
+import { createStatic } from './static.ts';
 
 export interface NetworkStore {
   readonly name: string;
@@ -1214,10 +1215,13 @@ function summary(c: Ctx) {
 
 export function createApi(
   networks: NetworkStore[],
-  opts: { version?: string; pending?: string[] } = {},
+  opts: { version?: string; pending?: string[]; webDir?: string } = {},
 ) {
   const pending = new Set(opts.pending ?? []);
   const byName = new Map(networks.map((n) => [n.name, n]));
+  // Optional. Without it this is exactly the API it always was, and the service
+  // index stays at `/`; with it, `/` is the UI and the index moves to `/v0`.
+  const serveStatic = opts.webDir ? createStatic(opts.webDir) : null;
 
   const send = (res: ServerResponse, code: number, body: unknown) => {
     const json = JSON.stringify(body, null, 2);
@@ -1229,7 +1233,7 @@ export function createApi(
     res.end(json);
   };
 
-  return createServer((req: IncomingMessage, res: ServerResponse) => {
+  return createServer(async (req: IncomingMessage, res: ServerResponse) => {
     let url: URL;
     try {
       url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
@@ -1257,7 +1261,16 @@ export function createApi(
       });
 
     try {
-      if (seg.length === 0) {
+      // The UI, when one is configured. Checked before routing but never in front
+      // of the API: `/v0` and `/health` belong to the API whatever is on disk, so
+      // a file dropped into web/ can never shadow an endpoint.
+      if (serveStatic && seg[0] !== 'v0' && seg[0] !== 'health') {
+        if (await serveStatic(url.pathname, res, req.method === 'HEAD')) return;
+      }
+
+      // Served at `/v0` as well as `/`, because with a UI mounted the root is a
+      // page and a client following the documented root would otherwise get HTML.
+      if (seg.length === 0 || (seg.length === 1 && seg[0] === 'v0')) {
         return send(res, 200, {
           service: 'fiber-atlas',
           version: opts.version ?? '0.1.0',
