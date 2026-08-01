@@ -116,6 +116,43 @@ const esc = (s) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c],
   );
 
+const REPO = 'https://github.com/digitaldrreamer/fiber-atlas';
+const BLOB = REPO + '/blob/main/';
+
+/**
+ * Repo references in prose, resolved to the file they name.
+ *
+ * Much of the prose on this page arrives from the API verbatim, and it cites the
+ * documents that constrain it: SPEC-ATLAS §3, SPEC-FAULTLINE §4.1, plan.md, the
+ * source file a rule lives in. A citation a reader cannot follow is not much of a
+ * citation, so each one becomes a link to the file in the repository.
+ *
+ * Order matters: the spec pattern runs before the bare-path one so that a §
+ * reference is absorbed into a single link rather than split in two.
+ */
+const REPO_REFS = [
+  // \d+(?:\.\d+)* rather than [\d.]+ so that a section number ending a sentence
+  // does not swallow the full stop into the link text.
+  [/SPEC-(?:ATLAS|FAULTLINE|FRONTEND)(?:\.md)?(?:\s*§\s*\d+(?:\.\d+)*(?:\s*[-–]\s*§?\d+(?:\.\d+)*)?)?/g, (m) => 'specs/' + (m.match(/SPEC-[A-Z]+/) || ['SPEC-ATLAS'])[0] + '.md'],
+  [/\bplan\.md(?:\s*§\s*\d+(?:\.\d+)*)?/g, () => 'plan.md'],
+  [/\bsrc\/[\w./-]*\.ts\b/g, (m) => m],
+  [/\bdocker\/[\w.-]+\b/g, (m) => m],
+  [/\bweb\/[\w.-]+\b/g, (m) => m],
+];
+
+/**
+ * Runs AFTER esc(), never before. The input is already-escaped text, so the
+ * anchors inserted here are the only markup in the result. Passing raw text
+ * through this would emit unescaped HTML, so every call site reads refs(esc(x)).
+ */
+function refs(escaped) {
+  let out = String(escaped == null ? '' : escaped);
+  for (const [re, path] of REPO_REFS) {
+    out = out.replace(re, (m) => `<a class="ref" href="${BLOB}${path(m)}" target="_blank" rel="noopener">${m}</a>`);
+  }
+  return out;
+}
+
 const fmt = (n) => (n == null ? '—' : Number(n).toLocaleString('en-US'));
 
 /** Shannons to CKB. Never called "balance", "available" or "liquidity" (§4.5). */
@@ -196,9 +233,9 @@ function days(d) {
 }
 
 const KIND = {
-  cooperative_close: { label: 'agreed', cls: '', meaning: 'both sides signed off — funds moved at once' },
-  force_close: { label: 'force', cls: 'bad', meaning: 'one side went alone — the chain timelocked the funds' },
-  penalty: { label: 'penalty', cls: 'bad', meaning: 'an old balance was published, proved, and swept' },
+  cooperative_close: { label: 'agreed', cls: '', meaning: 'both sides signed off, so the funds moved at once' },
+  force_close: { label: 'force', cls: 'bad', meaning: 'one side closed without agreement, so the chain timelocked the funds' },
+  penalty: { label: 'penalty', cls: 'bad', meaning: 'an old balance was published, proved revoked, and swept' },
   settlement: { label: 'settled', cls: '', meaning: 'the timelock elapsed and the funds were collected' },
 };
 
@@ -329,7 +366,7 @@ function shell(body) {
   const netSwitch = NETWORKS.map((n) => {
     const pending = PENDING.has(n);
     return `<a class="pill ${S.net === n ? 'on' : ''}${pending ? ' pending' : ''}" href="#/${esc(n)}/${esc(dest)}"${
-      pending ? ' title="configured but still backfilling — no data served for it yet"' : ''
+      pending ? ' title="configured but still backfilling, so no data is served for it yet"' : ''
     }>${esc(n.toUpperCase())}</a>`;
   }).join('');
 
@@ -353,7 +390,7 @@ function footer(extra) {
   return `
 <footer class="bottom">
   <span id="foot-left">${esc(netLabel())} · ${extra || ''}</span>
-  <span>TESTNET AND MAINNET FIGURES ARE NEVER COMPARABLE</span>
+  <span>TESTNET AND MAINNET FIGURES ARE NEVER COMPARABLE · <a href="${REPO}" target="_blank" rel="noopener">SOURCE ↗</a></span>
 </footer>`;
 }
 
@@ -410,7 +447,7 @@ async function paintFreshness() {
     const covTxt = cov && cov.complete ? 'L1 DATES 100%' : `L1 DATES ${cov ? Math.round((cov.resolved / Math.max(1, cov.referenced)) * 100) : '?'}%`;
     el.innerHTML =
       `<span title="Blocks whose header timestamp has been fetched. Anything below 100% means some events are undated, never mis-dated.">${esc(covTxt)}</span> · ` +
-      `<span class="${stale || !cov || !cov.complete ? 'stale' : ''}" title="How long ago THIS observer last completed a gossip pass. A node going quiet and our listener going quiet look identical from here — this is ours.">HEARD ${esc(ago(heard))} AGO</span>`;
+      `<span class="${stale || !cov || !cov.complete ? 'stale' : ''}" title="How long ago THIS observer last completed a gossip pass. A node going quiet and this listener going quiet look identical from here; this figure is about the listener.">HEARD ${esc(ago(heard))} AGO</span>`;
   } catch {
     el.innerHTML = '<span class="stale">API UNREACHABLE</span>';
   }
@@ -475,7 +512,7 @@ async function viewOverview() {
       value: settleUsable ? hours(settle.median) : '—',
       sub: settleUsable
         ? `1 IN 20 WAITS ${esc(hours(settle.p95))}+`
-        : `ONLY ${settle ? fmt(settle.n) : '0'} EVER — WE NEED ${floor}`,
+        : `ONLY ${settle ? fmt(settle.n) : '0'} RESOLVED · ${floor} NEEDED`,
       to: 'events',
       muted: !settleUsable,
     },
@@ -529,23 +566,23 @@ async function viewOverview() {
   <div>
     <h1>What happened to money on the Fiber Network, and who is carrying it now</h1>
     <p>Fiber lets two parties lock funds into a <strong>channel</strong> on CKB and pay each other off-chain, settling
-      only when they are done. Settle cooperatively and the funds move immediately. Fail to — a
-      <strong>force-close</strong> — and the chain freezes the money behind a timelock before anyone can touch it.
-      This page measures how often that happens, how long the money stays frozen, and which nodes are currently
-      announcing themselves. It is a read-only observatory: no wallet, nothing to sign, nothing held.</p>
+      only when they are done. If they settle cooperatively the funds move immediately. If they cannot, one side can
+      <strong>force-close</strong>, and the chain then holds the money behind a timelock until someone claims it. This
+      page measures how often that happens, how long the money stays locked, and which nodes are currently announcing
+      themselves. It is a read-only observatory: no wallet, nothing to sign, nothing held.</p>
   </div>
   <div class="card pad">
     <div class="tag" style="margin-bottom:10px">TWO SOURCES, NEVER MIXED</div>
-    <div class="legend"><span class="dot chain"></span><p><strong>Square — the chain.</strong> Every event ever, unforgeable. Past tense.</p></div>
-    <div class="legend"><span class="dot gossip"></span><p><strong>Circle — node chatter.</strong> What nodes say about themselves, heard by one listener. Incomplete, and current.</p></div>
+    <div class="legend"><span class="dot chain"></span><p><strong>Square: the chain.</strong> Every event, complete and verifiable. Describes the past.</p></div>
+    <div class="legend"><span class="dot gossip"></span><p><strong>Circle: node chatter.</strong> What nodes say about themselves, heard by one listener. Incomplete, and describes now.</p></div>
   </div>
 </div>
 
 <div class="kpis">${kpiHtml}</div>
 <div class="sourcekey">
-  <span><span class="dot chain"></span>FROM THE CHAIN — EVERY EVENT</span>
-  <span><span class="dot gossip"></span>FROM NODE CHATTER — ONLY WHAT WE HEARD</span>
-  <span><span style="color:var(--warn)">✕</span>MISLEADING — SHOWN ONLY SO NOBODY RECOMPUTES IT</span>
+  <span><span class="dot chain"></span>FROM THE CHAIN · EVERY EVENT</span>
+  <span><span class="dot gossip"></span>FROM NODE CHATTER · ONLY WHAT WE HEARD</span>
+  <span><span style="color:var(--warn)">✕</span>NOT USABLE AS A SIGNAL · SHOWN WITH ITS COUNTS SO IT IS NOT RECOMPUTED</span>
   <span class="net">ALL FIGURES ${esc(netLabel())}</span>
 </div>
 
@@ -564,13 +601,13 @@ async function viewOverview() {
   <div style="display:flex;gap:10px;margin-top:9px">
     <span class="tag ${attr.none ? 'warn' : ''}" style="flex:none;padding-top:2px">RECORD ${attr.none ? '✕' : ''}</span>
     <p class="note" style="margin:0;max-width:100ch">${attr.none
-      ? `You want a column saying whether a node has ever burned anyone. On this network it cannot exist.
-         The chain records that <em>a channel</em> force-closed, not who was on either end — ${attrLine}
-         <strong style="color:var(--muted);font-weight:600">Last heard is the closest honest substitute:</strong> it means the node was
-         reachable, not that it treated anyone well. Do not read it as a grade.`
+      ? `A column showing whether a node has ever force-closed on a counterparty cannot exist on this network.
+         The chain records that <em>a channel</em> force-closed, not who was on either end: ${attrLine}
+         <strong style="color:var(--muted);font-weight:600">Last heard is the nearest available substitute,</strong> and it only says the node was
+         reachable. It is not a measure of how it behaved.`
       : `${attrLine} Those events carry a windowed record on the node's own page, with the counts and their
-         denominator. It is still not a score: a force-close is evidence, not proof, and the rest of the archive
-         names no node at all — so a node with nothing against it has an empty record, not a clean one.`}</p>
+         denominator. It is still not a score: a force-close is evidence rather than proof, and the rest of the archive
+         names no node at all, so a node with nothing recorded against it has an empty record rather than a clean one.`}</p>
   </div>
 </section>
 
@@ -583,7 +620,7 @@ async function viewOverview() {
     ${timingCard(timing, floor)}
 
     <div class="sechead" style="margin:26px 0 10px">
-      <h2>How often it goes wrong — and when</h2>
+      <h2>How often it goes wrong, and when</h2>
       <a class="tag" href="${href('eras')}">ALL ERAS →</a>
     </div>
     <div class="card pad">${eraChart(eras, floor)}<p class="note">${esc(eraStory(eras, summary, floor))}</p></div>
@@ -618,14 +655,14 @@ async function viewOverview() {
 </div>
 
 <section class="sec card sunk pad">
-  <div class="tag warn" style="margin-bottom:12px">NOT ON THIS SITE, BY CONSTRUCTION</div>
+  <div class="tag warn" style="margin-bottom:12px">WHAT THIS SITE DOES NOT REPORT</div>
   <div class="refusals cols">
-    <div class="refusal"><span class="x">✕</span><p><strong>Whether a node has burned anyone before.</strong>
+    <div class="refusal"><span class="x">✕</span><p><strong>Whether a node has force-closed on a counterparty before.</strong>
       ${attrLine} ${attr.none
         ? 'No such record exists on this network, so none is shown.'
-        : 'What record exists is windowed, partial, and on each node’s own page — it is never totalled into a score or a ranking.'}</p></div>
+        : 'What record exists is windowed, partial, and kept on each node’s own page. It is never totalled into a score or a ranking.'}</p></div>
     <div class="refusal"><span class="x">✕</span><p><strong>How much a channel can actually move.</strong>
-      Balances are never broadcast by Fiber for third-party channels. Capacity is the ceiling a channel was funded to,
+      Fiber does not broadcast balances for third-party channels. Capacity is the ceiling a channel was funded to,
       not money available today.</p></div>
     <div class="refusal"><span class="x">✕</span><p><strong>Whether payments through a node succeed.</strong>
       Only that node’s own operator can see this, and even they cannot tell which hop failed.</p></div>
@@ -653,15 +690,15 @@ function attributionState(summary) {
 function attributionSentence(summary) {
   const a = summary.attribution || {};
   if (!a.events) return 'nothing in this archive ties an event to a pubkey.';
-  if (!a.node_attributed) return `${esc(fmt(a.events))} of ${esc(fmt(a.events))} ${esc(S.net)} events name no node pair at all — not one.`;
+  if (!a.node_attributed) return `none of the ${esc(fmt(a.events))} ${esc(S.net)} events name a node pair.`;
   return `only ${esc(fmt(a.node_attributed))} of ${esc(fmt(a.events))} ${esc(S.net)} events (${esc(pct(a.coverage, 2))}) name a node pair.`;
 }
 
 function timingCard(timing, floor) {
   const rh = timing.resolution_hours || {};
   const rows = [
-    ['penalty', 'Cheating punished', 'one side published an old balance and lost the lot', rh.penalty],
-    ['settlement', 'Ordinary force-close', 'one side simply walked away — the common case', rh.settlement],
+    ['penalty', 'Revoked state swept', 'one side published an old balance and the other claimed the funds', rh.penalty],
+    ['settlement', 'Ordinary force-close', 'one side closed without agreement, which is the common case', rh.settlement],
   ].filter(([, , , d]) => d && d.n > 0);
 
   const unres = timing.unresolved || {};
@@ -672,16 +709,16 @@ function timingCard(timing, floor) {
   // comparison against testnet's 50,610 that is not a comparison at all.
   if (usable.length === 0) {
     return `<div class="card pad">
-      <div class="tag warn" style="margin-bottom:9px">NO TYPICAL FIGURE · ${rows.length ? esc(fmt(rows[0][3].n)) : '0'} EVER, WE NEED ${floor}</div>
+      <div class="tag warn" style="margin-bottom:9px">NO TYPICAL FIGURE · ${rows.length ? esc(fmt(rows[0][3].n)) : '0'} RESOLVED, ${floor} NEEDED</div>
       <p class="note" style="margin:0 0 14px;color:var(--muted);font-size:12.5px">
         ${rows.length
-          ? `${esc(fmt(rows.reduce((s, r) => s + r[3].n, 0)))} resolved force-closes in ${esc(S.net)}’s whole history. That is a handful of anecdotes,
-             not a distribution — so no typical, worst or 1-in-20 figure is published. The counts stand on their own.`
+          ? `${esc(fmt(rows.reduce((s, r) => s + r[3].n, 0)))} resolved force-closes in ${esc(S.net)}’s whole history. That is too few to describe
+             a distribution, so no typical, worst or 1-in-20 figure is published. The counts are shown on their own.`
           : `No force-close on ${esc(S.net)} has ever resolved in this archive, so there is no wait to measure.`}
       </p>
       ${rows
         .map(
-          ([, label, gloss, d]) => `<div class="kv"><span class="k">${esc(label)} <span style="color:var(--faint)">— ${esc(gloss)}</span></span><span class="v">n = ${esc(fmt(d.n))} · min ${esc(hours(d.min))} · max ${esc(hours(d.max))}</span></div>`,
+          ([, label, gloss, d]) => `<div class="kv"><span class="k">${esc(label)} <span style="color:var(--faint)">(${esc(gloss)})</span></span><span class="v">n = ${esc(fmt(d.n))} · min ${esc(hours(d.min))} · max ${esc(hours(d.max))}</span></div>`,
         )
         .join('')}
       ${frozenRow(unres)}
@@ -698,7 +735,7 @@ function timingCard(timing, floor) {
         if (d.n < floor) {
           return `<div class="row"><div><div class="lbl">${esc(label)}</div><div class="gloss">${esc(gloss)}</div></div>
             <div class="r n">${esc(fmt(d.n))}</div>
-            <div class="r" style="grid-column:span 3;color:var(--warn);font-size:11.5px">below the ${floor}-sample floor — counts only</div></div>`;
+            <div class="r" style="grid-column:span 3;color:var(--warn);font-size:11.5px">below the ${floor}-sample floor, counts only</div></div>`;
         }
         return `<div class="row">
           <div><div class="lbl">${esc(label)}</div><div class="gloss">${esc(gloss)}</div></div>
@@ -720,7 +757,7 @@ function frozenRow(unres) {
       <div class="gloss" style="font-size:11px;color:var(--dim);margin-top:2px">never seen spent by this archive</div></div>
     <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap">
       <span class="big">${esc(fmt(n))}</span>
-      <span style="font-size:12px;color:var(--dim)">${n ? `commitment cells never collected · oldest ${esc(date(unres.oldest_created_at))}` : 'every force-close in this archive has been collected'}</span>
+      <span style="font-size:12px;color:var(--dim)">${n ? `commitment cells not yet collected · oldest ${esc(date(unres.oldest_created_at))}` : 'every force-close in this archive has been collected'}</span>
     </div>
   </a>`;
 }
@@ -751,7 +788,7 @@ function eraStory(eras, summary, floor) {
   const rated = eras.filter((e) => e.force_close_rate != null);
   const suppressed = eras.length - rated.length;
   if (!rated.length) {
-    return `No window on ${S.net} holds ${floor} closes, so no rate is published anywhere on this page — only counts.`;
+    return `No window on ${S.net} holds ${floor} closes, so no rate is published anywhere on this page, only counts.`;
   }
   const worst = rated.reduce((a, b) => (b.force_close_rate > a.force_close_rate ? b : a));
   const last = rated[rated.length - 1];
@@ -766,10 +803,10 @@ function eraStory(eras, summary, floor) {
   const collapsed = worst !== last && worst.force_close_rate > 0.3 && worst.force_close_rate > last.force_close_rate * 2;
   if (collapsed) {
     parts.push(
-      `A failure period peaking at ${pct(worst.force_close_rate)} between ${date(worst.observed_from)} and ${date(worst.observed_to)}, ` +
-        `down to ${pct(last.force_close_rate)} in the newest rated window.`,
+      `Failures peaked at ${pct(worst.force_close_rate)} between ${date(worst.observed_from)} and ${date(worst.observed_to)}, ` +
+        `and are down to ${pct(last.force_close_rate)} in the newest rated window.`,
     );
-    parts.push(`The all-time average of ${pct(life)} describes neither state, which is why it is struck through above.`);
+    parts.push(`The all-time average of ${pct(life)} sits between the two and describes neither, which is why it is struck through above.`);
   } else if (worst !== last && worst.force_close_rate > last.force_close_rate * 3) {
     parts.push(
       `Rates move but stay low: the worst published window ran at ${pct(worst.force_close_rate)} ` +
@@ -811,9 +848,9 @@ function concentrationCard(conc) {
   return `<div class="card pad bars">
     ${bars}
     ${lead ? `<p class="note">Leading by channel count: <a href="${href('node', lead.pubkey)}" class="mono">${esc(short(lead.pubkey))}</a>
-      ${lead.node_name ? esc(lead.node_name) : '<span class="unnamed">no name announced</span>'} — ${esc(fmt(lead.value))} announced channels.</p>` : ''}
-    <p class="note">${esc((conc.caveats || [])[0] || '')}</p>
-    <p class="note" style="color:var(--faint)">${esc(conc.scope ? conc.scope.note : '')}</p>
+      ${lead.node_name ? esc(lead.node_name) : '<span class="unnamed">no name announced</span>'}, with ${esc(fmt(lead.value))} announced channels.</p>` : ''}
+    <p class="note">${refs(esc((conc.caveats || [])[0] || ''))}</p>
+    <p class="note" style="color:var(--faint)">${refs(esc(conc.scope ? conc.scope.note : ''))}</p>
   </div>`;
 }
 
@@ -878,7 +915,7 @@ function nodeTable(rows, opts = {}) {
   // one request each — so the cell asserts nothing and defers to the node page.
   const attr = opts.attr || { none: true, attributed: 0 };
   const heads = [
-    ['PUBKEY', 'gossip', '', 'Announced in node chatter. 66 hex characters — click to copy the whole thing.'],
+    ['PUBKEY', 'gossip', '', 'Announced in node chatter. 66 hex characters; click to copy the whole thing.'],
     ['NAME', 'gossip', '', 'Self-reported and usually empty.'],
     ['CHANNELS', 'gossip', 'r', 'Channels this node currently announces. Not every channel it has.'],
     ['CAPACITY', 'gossip', 'r', 'Sum of announced channel totals. A funding ceiling, never a balance.'],
@@ -886,8 +923,8 @@ function nodeTable(rows, opts = {}) {
     ['LAST HEARD', 'gossip', 'r', 'Since this listener last heard the node announce itself. A quiet node and a quiet listener look identical from here.'],
     ['AUTO-ACCEPT', 'gossip', 'r', 'The minimum inbound this node says it will accept without asking. Self-reported.'],
     attr.none
-      ? ['RECORD ✕', 'absent', 'r', 'No on-chain event on this network can be attributed to any node — see the note below the table.']
-      : ['RECORD', 'chain', 'r', `${fmt(attr.attributed)} events on this network name a node pair. Which nodes they name is on each node's own page — this list cannot say without a request per row.`],
+      ? ['RECORD ✕', 'absent', 'r', 'No on-chain event on this network can be attributed to any node. See the note below the table.']
+      : ['RECORD', 'chain', 'r', `${fmt(attr.attributed)} events on this network name a node pair. Which nodes they name is on each node's own page; this list would need one request per row to say.`],
   ];
   const record = attr.none
     ? '<div class="r num" style="color:var(--warn);white-space:nowrap" title="No on-chain event on this network is attributable to a specific node.">not attributable</div>'
@@ -960,8 +997,8 @@ async function viewNodes() {
   return {
     html: `
 <h1>Nodes</h1>
-<p class="lede">Every node this listener has heard announce itself on ${esc(S.net)}. A node that never announced is not
-  here at all — this is a record of what reached one observer, not a census of the network.${naming}</p>
+<p class="lede">Every node this listener has heard announce itself on ${esc(S.net)}. A node that never announced does not
+  appear here at all, so this is a record of what reached one observer rather than a census of the network.${naming}</p>
 <div class="filters">
   <input class="search" id="q" value="${esc(param('q', ''))}" placeholder="filter by pubkey, name or version…" autocomplete="off" spellcheck="false">
   <div style="display:flex;gap:6px;flex-wrap:wrap">${filters}</div>
@@ -971,11 +1008,11 @@ ${rows.length
   ? nodeTable(rows, { attr, footer: `<span>${fmt(rows.length)} OF ${fmt(nodesBody.total)} NODES</span><span>ALL FIGURES ${esc(netLabel())}</span>` })
   : `<div class="empty"><p>Nothing matches that filter. <a data-act="clear">Clear it</a>.</p></div>`}
 <div class="card sunk pad" style="margin-top:18px">
-  <div class="tag warn" style="margin-bottom:12px">WHAT THIS TABLE DELIBERATELY LACKS</div>
+  <div class="tag warn" style="margin-bottom:12px">WHAT THIS TABLE DOES NOT SHOW</div>
   <div class="refusals cols">
     <div class="refusal"><span class="x">✕</span><p><strong>A reliability ranking.</strong> ${attr.none
-      ? 'On-chain failures cannot be attributed to any node on this network, so there is no per-node record to rank on — and a green tick would be worse than an empty column.'
-      : `${esc(fmt(attr.attributed))} events name a node pair, so a partial record exists on each node’s page. It is still not sortable here: ranking on a record covering ${esc(pct(attr.coverage, 2))} of events would rank observation luck, not behaviour.`}</p></div>
+      ? 'On-chain failures cannot be attributed to any node on this network, so there is no per-node record to rank on. An empty column is more accurate than a default pass mark.'
+      : `${esc(fmt(attr.attributed))} events name a node pair, so a partial record exists on each node’s page. It is still not sortable here: ranking on a record covering ${esc(pct(attr.coverage, 2))} of events would rank how much each node happened to be observed, not how it behaved.`}</p></div>
     <div class="refusal"><span class="x">✕</span><p><strong>An uptime score.</strong> Continuous-presence tracking cannot be backfilled; it starts
       when the table does. Per-node presence is on each node’s page with the date we started watching attached.</p></div>
     <div class="refusal"><span class="x">✕</span><p><strong>A location.</strong> Nodes broadcast addresses, not locations, and most of these
@@ -1094,8 +1131,8 @@ ${crumb('NODES', 'nodes', short(S.id, 10, 6))}
   <div>
     <h2>Presence</h2>
     <p class="lede" style="margin:4px 0 10px">Continuous stretches during which this node kept announcing itself.
-      This is reachability, not conduct — and it cannot be backfilled, so the window below starts the day this
-      archive started listening, not the day the node did.</p>
+      This measures reachability, not conduct. It also cannot be backfilled, so the window below starts on the day this
+      archive began listening rather than the day the node did.</p>
     ${presenceCard(up)}
 
     <h2 style="margin-top:26px">Announced channels</h2>
@@ -1124,8 +1161,8 @@ ${crumb('NODES', 'nodes', short(S.id, 10, 6))}
       </div><div class="tfoot" style="min-width:760px"><span>${fmt(chans.length)} OF ${fmt(body.channels.total)} ANNOUNCED</span></div></div>`
       : `<div class="empty">
           <div class="tag warn" style="margin-bottom:10px">NOTHING TO LIST</div>
-          <p>This node announces no channel that this archive can also see on the chain. Showing a channel we cannot
-             tie to this node would be inventing exactly the link the rest of this site refuses to invent.</p>
+          <p>This node announces no channel that this archive can also see on the chain. A channel that cannot be tied
+             to this node is not listed under it, because the link is the thing being asserted.</p>
         </div>`}
 
     <h2 style="margin-top:26px">Routing policy, as announced</h2>
@@ -1138,26 +1175,26 @@ ${crumb('NODES', 'nodes', short(S.id, 10, 6))}
 
   <div>
     <div class="card sunk pad">
-      <div class="tag warn" style="margin-bottom:12px">WHAT WE CANNOT TELL YOU ABOUT THIS NODE</div>
+      <div class="tag warn" style="margin-bottom:12px">WHAT THIS PAGE CANNOT TELL YOU</div>
       <div class="refusals">
         ${fl.observed && fl.counts
           ? `<div class="refusal"><span class="x">✕</span><p><strong>Its full history.</strong>
               The record below covers one window and only the events that name this node. Everything outside it is
-              unobserved, not clean — so the counts are a floor, never a total.</p></div>`
+              unobserved rather than clean, so the counts are a floor rather than a total.</p></div>`
           : `<div class="refusal"><span class="x">✕</span><p><strong>Has it ever force-closed on someone?</strong>
-              Unknown, and unknowable from here. ${esc(fl.no_data_reason || 'No on-chain event is attributable to this node.')}
-              A green tick in this spot would be a lie, so there is not one.</p></div>`}
+              Not knowable from the data available here. ${esc(fl.no_data_reason || 'No on-chain event is attributable to this node.')}
+              Showing a pass mark in this spot would assert something unmeasured, so the space is left empty.</p></div>`}
         <div class="refusal"><span class="x">✕</span><p><strong>Can it route my payment?</strong>
           Only its operator can see that, and even they cannot tell which hop failed. The capacity above is a ceiling,
           not liquidity.</p></div>
         <div class="refusal"><span class="x">✕</span><p><strong>Is the name real?</strong>
           ${n.node_name ? `“${esc(n.node_name)}” is what this node broadcasts about itself. Nothing verifies it.` : 'This node broadcasts no name at all, which is the usual case.'}</p></div>
       </div>
-      ${(fl.caveats || []).length ? `<p class="note" style="color:var(--faint)">${esc(fl.caveats[0])}</p>` : ''}
+      ${(fl.caveats || []).length ? `<p class="note" style="color:var(--faint)">${refs(esc(fl.caveats[0]))}</p>` : ''}
     </div>
 
     <div class="card pad" style="margin-top:18px">
-      <div class="tag" style="margin-bottom:12px"><span class="dot gossip"></span> AS ANNOUNCED — SELF-REPORTED</div>
+      <div class="tag" style="margin-bottom:12px"><span class="dot gossip"></span> AS ANNOUNCED · SELF-REPORTED</div>
       ${addresses.map((a) => `<div class="kv"><span class="k">Address</span><span class="v">${esc(a)}</span></div>`).join('') || '<div class="kv"><span class="k">Address</span><span class="v unnamed">none announced</span></div>'}
       <div class="kv"><span class="k">Version</span><span class="v">${esc(n.version || 'not announced')}</span></div>
       <div class="kv"><span class="k">Auto-accept minimum</span><span class="v">${n.auto_accept_min_ckb ? esc(ckb(autoAcceptShannons(n.auto_accept_min_ckb))) : '<span class="unnamed">not offered</span>'}</span></div>
@@ -1177,7 +1214,7 @@ function locationText(loc) {
   const addrs = (loc && loc.addresses) || [];
   const resolved = addrs.filter((a) => a.resolved);
   if (!addrs.length) return 'no routable address announced';
-  if (!resolved.length) return 'not resolved — only the announced address is known';
+  if (!resolved.length) return 'not resolved; only the announced address is known';
   return resolved.map((a) => [a.country_name || a.country_code, a.asn_org].filter(Boolean).join(' · ')).join(', ');
 }
 
@@ -1212,7 +1249,7 @@ function presenceCard(up) {
       <div class="track"><div class="seen" style="width:${seenPct.toFixed(1)}%"></div><div class="blind"></div></div>
       <div class="ends"><span>WATCHING SINCE ${esc(date(up.observed_since))}</span><span>NOW</span></div>
     </div>
-    <p class="note">${esc((up.caveats || [])[0] || 'Measured only from the moment this archive started listening.')}</p>
+    <p class="note">${refs(esc((up.caveats || [])[0] || 'Measured only from the moment this archive started listening.'))}</p>
   </div>`;
 }
 
@@ -1221,8 +1258,8 @@ function policyCard(pol) {
   const d = pol.directions || {};
   const total = d.total || 0;
   if (!total) {
-    return `<div class="empty"><p>This node announces no channel direction we can read, so there is no policy to show —
-      not a policy of zero.</p></div>`;
+    return `<div class="empty"><p>This node announces no channel direction that can be read here, so there is no policy
+      to show. That is different from a policy that permits nothing.</p></div>`;
   }
   const seg = [
     ['enabled', d.enabled || 0, 'var(--chain)'],
@@ -1249,7 +1286,7 @@ function policyCard(pol) {
         : '<span class="unnamed">not announced</span>'
     }</span></div>
     <div class="kv"><span class="k">Newest update</span><span class="v">${esc(datetime(pol.newest_update_at))}</span></div>
-    <p class="note">${esc(pol.note || '')}</p>
+    <p class="note">${refs(esc(pol.note || ''))}</p>
   </div>`;
 }
 
@@ -1277,15 +1314,15 @@ function faultlineCard(fl) {
   const ratio = (label, rate, numerator) =>
     `<div class="kv"><span class="k">${esc(label)}</span><span class="v">${
       rate == null
-        ? '<span class="unnamed">no closes in window — no rate</span>'
+        ? '<span class="unnamed">no closes in window, so no rate</span>'
         : `${esc(pct(rate, 2))} <span style="color:var(--faint)">= ${esc(fmt(numerator))} / ${esc(fmt(c.closes))}</span>`
     }</span></div>`;
 
   return `
 <h2 style="margin-top:26px">On-chain record, in this window</h2>
-<p class="lede" style="margin:4px 0 10px">Events that name this node as one of the two parties. This is a floor, not a
-  total: everything the archive could not attribute is missing from it, and a force-close is evidence rather than proof
-  — a peer going offline forces one too.</p>
+<p class="lede" style="margin:4px 0 10px">Events that name this node as one of the two parties. These are a floor rather
+  than a total: everything the archive could not attribute is missing from them. A force-close is also evidence rather
+  than proof of misbehaviour, since a peer going offline forces one too.</p>
 <div class="card pad">
   <div class="runs">
     <div><div class="k">Attributed closes</div><div class="v">${esc(fmt(c.closes))}</div></div>
@@ -1301,11 +1338,11 @@ function faultlineCard(fl) {
   </div>
   ${c.closes < DEFAULT_SAMPLE_FLOOR
     ? `<p class="note" style="color:var(--warn)">${esc(fmt(c.closes))} attributed ${c.closes === 1 ? 'close is' : 'closes are'} below the
-       ${DEFAULT_SAMPLE_FLOOR}-sample floor this archive uses for era rates. The counts above are real; the ratios beside them are not
+       ${DEFAULT_SAMPLE_FLOOR}-sample floor this archive uses for era rates. The counts above are exact; the ratios beside them are not
        stable enough to set against another node’s. ${c.force_close === 0 ? 'Zero force-closes here means none were seen among those few, not that there were none.' : ''}</p>`
     : ''}
   <ul style="margin:14px 0 0;padding-left:18px;font-size:12px;line-height:1.65;color:var(--dim)">
-    ${(fl.caveats || []).map((x) => `<li>${esc(x)}</li>`).join('')}
+    ${(fl.caveats || []).map((x) => `<li>${refs(esc(x))}</li>`).join('')}
   </ul>
 </div>`;
 }
@@ -1344,7 +1381,7 @@ async function viewChannels() {
   return {
     html: `
 <h1>Channels</h1>
-<p class="lede">Every channel the chain has ever seen opened on ${esc(S.net)} — this list is complete, because a funding
+<p class="lede">Every channel the chain has ever seen opened on ${esc(S.net)}. This list is complete, because a funding
   cell cannot be hidden. The two nodes on either end usually are <em>not</em> known: the chain records the channel,
   not who was in it.</p>
 <div class="filters">
@@ -1354,8 +1391,8 @@ async function viewChannels() {
 </div>
 ${q && rows.length === 0
   ? `<div class="empty"><p>No channel on this page of ${PAGE} matches “<strong>${esc(param('q', ''))}</strong>”.
-      This box filters the rows already fetched, not the ${esc(fmt(body.total))} in the archive —
-      <a data-act="clear">clear it</a> and page through, or paste a full outpoint to open it directly.</p></div>`
+      This box filters the rows already fetched, not the ${esc(fmt(body.total))} in the archive.
+      <a data-act="clear">Clear it</a> and page through, or paste a full outpoint to open it directly.</p></div>`
   : ''}
 <div class="scroll"><div class="grid" style="grid-template-columns:minmax(0,1.2fr) 116px minmax(0,1.4fr) 104px 104px 96px;min-width:900px">
   <div class="h"><span class="dot chain"></span>CHANNEL</div>
@@ -1389,7 +1426,7 @@ ${q && rows.length === 0
     <button class="pill" data-act="page" data-arg="${page + 1}" ${(page + 1) * PAGE >= body.total ? 'disabled' : ''}>NEXT →</button>
   </span>
 </div></div>
-<p class="note">${esc(body.capacity_is_not_balance || '')}</p>`,
+<p class="note">${refs(esc(body.capacity_is_not_balance || ''))}</p>`,
     foot: `${fmt(body.total)} CHANNELS · CAPACITY IS A CEILING, NOT A BALANCE`,
   };
 }
@@ -1427,7 +1464,7 @@ async function viewChannel() {
         c.close_kind == null
           ? 'NOT CLOSED YET'
           : c.close_kind === 'cooperative'
-            ? 'AGREED CLOSE — NO TIMELOCK'
+            ? 'AGREED CLOSE · NO TIMELOCK'
             : frozenH != null
               ? 'CLOSE → CLAIM'
               : 'NO SPEND OBSERVED',
@@ -1450,7 +1487,7 @@ async function viewChannel() {
     const k = KIND[e.kind] || { label: e.kind, meaning: '' };
     steps.push({
       kind: e.kind,
-      title: { cooperative_close: 'Closed by agreement', force_close: 'Force-closed', penalty: 'Cheat caught and punished', settlement: 'Funds collected' }[e.kind] || k.label,
+      title: { cooperative_close: 'Closed by agreement', force_close: 'Force-closed', penalty: 'Revoked state swept', settlement: 'Funds collected' }[e.kind] || k.label,
       when: e.block_at ? date(e.block_at) : 'undated block ' + fmt(e.block_number),
       body: k.meaning,
       tx: e.tx_hash,
@@ -1469,7 +1506,7 @@ async function viewChannel() {
       kind: 'frozen',
       title: 'Never seen collected',
       when: 'still frozen',
-      body: 'This archive has never seen the commitment cell spent. Either nobody claimed it, or it happened outside what this scan covers. We do not guess which.',
+      body: 'This archive has never seen the commitment cell spent. Either nobody claimed it, or the spend falls outside what this scan covers. Which of the two is not determined here.',
     });
   }
 
@@ -1538,10 +1575,10 @@ ${crumb('CHANNELS', 'channels', shortOutpoint(S.id))}
             )
             .join('')}
         <p class="note">Known only because this channel was also announced in node chatter while it was open. Most channels never were.</p>`
-        : `<div class="tag warn" style="margin-bottom:10px">UNKNOWN — AND THIS IS THE NORMAL CASE</div>
-        <p class="note" style="margin:0;color:var(--muted);font-size:12.5px">The chain proves this channel existed, was funded, and ended the way the timeline says.
+        : `<div class="tag warn" style="margin-bottom:10px">UNKNOWN, WHICH IS THE NORMAL CASE</div>
+        <p class="note" style="margin:0;color:var(--muted);font-size:12.5px">The chain shows that this channel existed, was funded, and ended the way the timeline says.
           It does not record who the two parties were. This channel was never announced in gossip while it was open, so nothing ties it to a pubkey.</p>
-        <p class="note" style="color:var(--muted);font-size:12.5px">That is why no node on this site carries a force-close record.</p>`}
+        <p class="note" style="color:var(--muted);font-size:12.5px">This is the reason no node on this site carries a force-close record.</p>`}
     </div>
 
     <div class="card sunk pad" style="margin-top:18px">
@@ -1561,8 +1598,8 @@ function directionsCard(upd) {
   const dirs = upd.directions || [];
   const missing = upd.missing_directions || [];
   if (!dirs.length && !missing.length) {
-    return `<div class="empty" style="margin-top:10px"><p>No gossip row for either direction. Both are
-      <strong>unknown</strong> — which is not the same as disabled, and definitely not the same as enabled.</p></div>`;
+    return `<div class="empty" style="margin-top:10px"><p>No gossip row for either direction, so both are
+      <strong>unknown</strong>. That is a separate state from disabled, and a separate state from enabled.</p></div>`;
   }
   return `<div class="card" style="margin-top:10px;overflow:hidden">
     <div class="grid" style="grid-template-columns:92px 108px 132px 116px minmax(0,1fr)">
@@ -1587,12 +1624,12 @@ function directionsCard(upd) {
           (d) => `<div class="row">
         <div class="num">${esc(d)}</div>
         <div>${chip('unknown', 'unknown')}</div>
-        <div class="r num unnamed" style="grid-column:span 3">never announced in gossip — not disabled</div>
+        <div class="r num unnamed" style="grid-column:span 3">never announced in gossip, which is not the same as disabled</div>
       </div>`,
         )
         .join('')}
     </div>
-    <div class="tfoot"><span>${esc(upd.note || '')}</span></div>
+    <div class="tfoot"><span>${refs(esc(upd.note || ''))}</span></div>
   </div>`;
 }
 
@@ -1623,10 +1660,10 @@ async function viewEvents() {
   return {
     html: `
 <h1>Events</h1>
-<p class="lede">Every channel event the chain has recorded on ${esc(S.net)}, newest first. ${fmt(body.total)} indexed,
-  coverage complete — nothing here is sampled, inferred, or reconstructed. The
-  <strong>attribution</strong> column travels with every row: it is the difference between an event we can pin to two
-  nodes and one we can only pin to a channel.</p>
+<p class="lede">Every channel event the chain has recorded on ${esc(S.net)}, newest first. ${fmt(body.total)} indexed, with
+  complete coverage: nothing here is sampled, inferred, or reconstructed. The <strong>attribution</strong> column
+  travels with every row and marks the difference between an event that can be tied to two nodes and one that can only
+  be tied to a channel.</p>
 <div class="filters"><div style="display:flex;gap:6px;flex-wrap:wrap">${filters}</div></div>
 ${rows.length
   ? `<div class="scroll"><div class="grid" style="grid-template-columns:106px 104px minmax(0,1.2fr) 118px minmax(0,1.6fr) 108px;min-width:940px">
@@ -1660,16 +1697,16 @@ ${rows.length
   </span>
 </div></div>`
   : `<div class="empty">
-      <div class="tag warn" style="margin-bottom:10px">NONE — AND THAT IS THE FINDING</div>
+      <div class="tag warn" style="margin-bottom:10px">NONE, AND THAT IS THE RESULT</div>
       <p>${kind === 'penalty'
-        ? `Not one penalty has ever been recorded on ${esc(S.net)}. A penalty is provable misbehaviour: a party published a revoked state and got swept for it. Zero of them, across the complete chain history, is the strongest positive claim this archive can make about this network.`
+        ? `No penalty has ever been recorded on ${esc(S.net)}. A penalty means a party published a revoked state and had the funds swept by the other side, which is the one on-chain event that demonstrates misbehaviour. A count of zero across the complete chain history is a finding, not a gap in the data.`
         : `No event of this kind exists in ${esc(S.net)}’s complete history.`}</p>
     </div>`}
 <div class="card sunk pad" style="margin-top:18px">
   <div class="tag" style="margin-bottom:12px">WHAT ATTRIBUTION MEANS</div>
   <div class="refusals cols">
     ${Object.entries(body.attribution_levels || {})
-      .map(([k, v]) => `<div class="refusal"><span class="x" style="color:var(--dim)">·</span><p><strong>${esc(ATTRIBUTION[k] ? ATTRIBUTION[k].label : k)}</strong> ${esc(v)}</p></div>`)
+      .map(([k, v]) => `<div class="refusal"><span class="x" style="color:var(--dim)">·</span><p><strong>${esc(ATTRIBUTION[k] ? ATTRIBUTION[k].label : k)}</strong> ${refs(esc(v))}</p></div>`)
       .join('')}
   </div>
 </div>`,
@@ -1689,10 +1726,11 @@ async function viewEras() {
   return {
     html: `
 <h1>Eras</h1>
-<p class="lede">The network was not one thing over time. Closes are bucketed into windows of a million blocks, and a
-  failure rate is published only where a bucket holds at least ${floor} closes. Below that you get the counts and
-  nothing else — a rate over a dozen closes is noise wearing a percentage sign.</p>
-<p class="lede" style="color:var(--faint)">${esc(body.era_definition || '')}</p>
+<p class="lede">The force-close rate has changed substantially over time, so it is reported per window rather than as a
+  single figure. Closes are bucketed into windows of a million blocks. A rate is published only where a bucket holds at
+  least ${floor} closes; below that the bucket shows its counts and no rate, because a percentage over fewer
+  closes than that is not stable enough to compare against another window.</p>
+<p class="lede" style="color:var(--faint)">${refs(esc(body.era_definition || ''))}</p>
 
 <div class="split wide">
   <div class="card" style="overflow:hidden">
@@ -1714,9 +1752,9 @@ async function viewEras() {
         <div class="r num" style="${e.penalties ? 'color:var(--warn)' : ''}">${esc(fmt(e.penalties))}</div>
         <div class="r mono" style="font-size:13px;${none ? 'color:var(--warn)' : e.force_close_rate > 0.3 ? 'color:var(--warn)' : ''}">${none ? '—' : esc(pct(e.force_close_rate))}</div>
         <div title="${esc(
-          none ? e.rate_suppressed_reason || `under the ${floor}-close floor — counts only` : '',
+          none ? e.rate_suppressed_reason || `under the ${floor}-close floor, counts only` : '',
         )}"><span class="clip" style="font-size:11.5px;color:var(--dim)">${esc(
-          none ? e.rate_suppressed_reason || `under the ${floor}-close floor — counts only` : e.force_close_rate > 0.3 ? 'failure period' : 'normal operation',
+          none ? e.rate_suppressed_reason || `under the ${floor}-close floor, counts only` : e.force_close_rate > 0.3 ? 'elevated failure' : 'normal operation',
         )}</span></div>
       </div>`;
         })
@@ -1734,16 +1772,16 @@ async function viewEras() {
       <div class="mono" style="font-size:11px;color:var(--warn);margin-top:6px">${esc(fmt(summary.channels.force_close))} / ${esc(fmt(summary.channels.closed))} CLOSES · ALL TIME · ${esc(netLabel())}</div>
       <p class="note" style="color:var(--muted);font-size:12.5px">The all-time average force-close rate. It flattens every window above into one number, including
         the windows the sample floor says are not comparable, so it describes no period the network was actually in.
-        The API serves it flagged unusable; it is printed here, struck through, only so nobody derives it from the two
-        counts beside it and quotes it as a headline.</p>
-      <p class="note" style="color:var(--faint)">${esc(summary.channels.lifetime_rate_warning || '')}</p>
+        The API serves it flagged unusable. It is printed here, struck through, so that a reader who would otherwise
+        divide the two counts beside it can see why the result should not be quoted.</p>
+      <p class="note" style="color:var(--faint)">${refs(esc(summary.channels.lifetime_rate_warning || ''))}</p>
     </div>
 
     <div class="card pad" style="margin-top:18px">
       <div class="tag" style="margin-bottom:10px">WHY BLOCKS, NOT MONTHS</div>
-      <p class="note" style="margin:0;color:var(--muted);font-size:12.5px">${esc(body.note || '')} Buckets are chain progress, so their
-        wall-clock widths are unequal — the dates on each row are the real header timestamps of the first and last
-        close in the bucket, not a calendar range.</p>
+      <p class="note" style="margin:0;color:var(--muted);font-size:12.5px">${refs(esc(body.note || ''))} Buckets measure chain progress, so their
+        wall-clock widths are unequal. The dates on each row are the header timestamps of the first and last close in
+        the bucket, not a calendar range.</p>
       <a class="jsonlink" style="margin-top:14px" href="${esc(apiUrl(`/v0/${S.net}/eras`))}" target="_blank" rel="noopener">ERAS AS JSON →</a>
     </div>
   </div>
@@ -1769,9 +1807,9 @@ async function viewFrozen() {
   return {
     html: `
 <h1>Money still frozen</h1>
-<p class="lede">When a Fiber channel force-closes, the chain locks the funds behind a timelock. Someone then has to
-  spend the commitment cell to collect them. These are the cells this archive has <strong>never seen spent</strong> —
-  which is a statement about what this scan has observed, not a claim that the money is permanently lost.</p>
+<p class="lede">When a Fiber channel force-closes, the chain locks the funds behind a timelock, and someone then has to
+  spend the commitment cell to collect them. Listed below are the cells this archive has <strong>never seen spent</strong>.
+  That describes what this scan has observed, and is not a claim that the funds are permanently lost.</p>
 
 <div class="kpis" style="margin-bottom:22px">
   <div class="kpi"><div class="head"><span class="dot chain"></span><span>Cells never seen spent</span></div>
@@ -1820,21 +1858,21 @@ ${cells.length
 </div></div>`
   : `<div class="empty">
       <div class="tag" style="margin-bottom:10px;color:var(--chain)">NOTHING FROZEN</div>
-      <p>Every force-close in ${esc(S.net)}’s complete on-chain history has had its commitment cell spent. There is
-        nothing outstanding. On a network this size that is a fact worth stating plainly rather than an empty table.</p>
+      <p>Every force-close in ${esc(S.net)}’s complete on-chain history has had its commitment cell spent, so nothing
+        is outstanding. This table is empty because the count is zero, not because data is missing.</p>
     </div>`}
 
 <div class="card sunk pad" style="margin-top:18px">
   <div class="tag warn" style="margin-bottom:12px">HOW TO READ THIS</div>
   <div class="refusals cols">
     <div class="refusal"><span class="x">✕</span><p><strong>“Never seen spent” is not “permanently stuck.”</strong>
-      ${esc((body.what_this_is || '').slice(0, 200))}</p></div>
+      ${refs(esc(body.what_this_is || ''))}</p></div>
     <div class="refusal"><span class="x">✕</span><p><strong>Capacity is the channel ceiling, not the amount owed to anyone.</strong>
       How the funds were split between the two sides was never broadcast, so no figure here is a claim about whose money it is.</p></div>
     <div class="refusal"><span class="x">✕</span><p><strong>Most participants are unknown.</strong>
       A commitment cell names its channel, and a channel names its nodes only if it was in gossip while open. Most were not.</p></div>
   </div>
-  <p class="note" style="color:var(--faint)">${esc((timing.unresolved && timing.unresolved.note) || '')}</p>
+  <p class="note" style="color:var(--faint)">${refs(esc((timing.unresolved && timing.unresolved.note) || ''))}</p>
 </div>`,
     foot: `${fmt(body.total)} UNRESOLVED COMMITMENT CELLS ON ${esc(netLabel())}`,
   };
@@ -1845,10 +1883,10 @@ ${cells.length
 // ---------------------------------------------------------------------------
 
 const ENDPOINTS = [
-  ['/v0/{network}/summary', 'Headline counts, attribution coverage, and the lifetime rate — flagged unusable.'],
+  ['/v0/{network}/summary', 'Headline counts, attribution coverage, and the lifetime rate, flagged unusable.'],
   ['/v0/{network}/eras', 'Million-block windows with counts; the rate is null wherever n is under the floor.'],
   ['/v0/{network}/faultline/timing', 'How long funds stay frozen after a force-close. Derived from L1 alone, so complete.'],
-  ['/v0/{network}/faultline/unresolved', 'Commitment cells never observed spent — money still frozen.'],
+  ['/v0/{network}/faultline/unresolved', 'Commitment cells never observed spent, meaning funds still locked.'],
   ['/v0/{network}/faultline/events', 'Complete event log, newest first, keyset-paginated on next_cursor.'],
   ['/v0/{network}/nodes', 'Nodes heard in gossip, with first and last seen.'],
   ['/v0/{network}/lsps', 'Ranked inbound-liquidity candidates. States in the payload which signal it omits.'],
@@ -1856,7 +1894,7 @@ const ENDPOINTS = [
   ['/v0/{network}/concentration', 'Top-N share and HHI, by capacity and by channel count.'],
   ['/v0/{network}/activity', 'Channels opened and closed per calendar month across the archive.'],
   ['/v0/{network}/distribution', 'Percentiles for capacity, announced fee rate, and closed-channel lifetime.'],
-  ['/v0/{network}/liveness', 'Announcement staleness in age buckets — enabled, disabled and unknown kept apart.'],
+  ['/v0/{network}/liveness', 'Announcement staleness in age buckets, with enabled, disabled and unknown kept apart.'],
   ['/v0/{network}/geo', 'Country and hosting provider, from addresses nodes broadcast themselves.'],
   ['/health', 'Scan cursors, gossip freshness, block-time coverage. Check before quoting anything.'],
 ];
@@ -1889,8 +1927,8 @@ async function viewApi() {
 <h1>API</h1>
 <p class="lede">Read-only JSON, no key, no rate limit worth mentioning, CORS open. Every response carries its network,
   and where a figure is suppressed or unusable it says so <em>in the payload</em> rather than omitting the field.
-  Absence is never encoded as zero. The samples below are fetched live from
-  <code class="mono">${esc(API || location.origin)}</code> right now — this page is its own reference client.</p>
+  Absence is never encoded as zero. The samples below are fetched from
+  <code class="mono">${esc(API || location.origin)}</code> as this page loads, so it doubles as a reference client.</p>
 
 <div class="split even">
   <div class="card" style="overflow:hidden">

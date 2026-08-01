@@ -152,7 +152,7 @@ function geo(c: Ctx) {
       unresolved_nodes: unresolved,
       nodes_without_routable_address: noRoutable,
       note:
-        'unresolved_nodes announce a routable address that has not been looked up yet. nodes_without_routable_address announce only private/loopback addresses — those have no location to find. Neither is counted in the breakdowns below; read them against resolved_nodes, not against nodes.',
+        'unresolved_nodes announce a routable address that has not been looked up yet. nodes_without_routable_address announce only private/loopback addresses, which have no location to find. Neither is counted in the breakdowns below; read them against resolved_nodes, not against nodes.',
     },
     countries: [...countries.values()].sort((a, b) => b.nodes - a.nodes),
     hosting_providers: [...providers.values()].sort((a, b) => b.nodes - a.nodes),
@@ -207,7 +207,7 @@ function nodeUptime(c: Ctx, pubkey: string) {
     longest_run_days: Number((Math.max(...durations) / 86400000).toFixed(2)),
     caveats: [
       'Measured from observed_since only. This table cannot be backfilled, so a node online for a year reads as short-lived until enough time passes.',
-      'Presence is OUR observation. If the observing node loses peers, every run ends at once — cross-check /health.gossip_last_run_at before reading a break as the node going away.',
+      'Presence is OUR observation. If the observing node loses peers, every run ends at once, so cross-check /health.gossip_last_run_at before reading a break as the node going away.',
       'Continuous presence is not reliability. It says the node was announced, not that it behaved.',
     ],
   };
@@ -316,7 +316,7 @@ function distribution(c: Ctx) {
     open_channel_capacity_shannons: {
       ...(summarise(caps) ?? {}),
       total: caps.reduce((a, b) => a + b, 0),
-      source: 'L1 archive — complete for channels this scan has not seen close.',
+      source: 'L1 archive, complete for channels this scan has not seen close.',
     },
     announced_fee_rate_shannons_per_kb: {
       ...(summarise(fees) ?? {}),
@@ -373,7 +373,7 @@ function liveness(c: Ctx) {
     caveats: [
       'Staleness is measured against OUR observation, so it degrades if the observing node loses peers. Cross-check /health.gossip_last_run_at.',
       'A stale announcement is a soft signal. It suggests a path is not being maintained; it does not prove the channel is unusable.',
-      'enabled=unknown means gossip carried no ChannelUpdate for that direction — not that it is disabled (SPEC-ATLAS §3).',
+      'enabled=unknown means gossip carried no ChannelUpdate for that direction, not that it is disabled (SPEC-ATLAS §3).',
     ],
   };
 }
@@ -424,10 +424,10 @@ function faultlineTiming(c: Ctx) {
       commitment_cells: unspent.n,
       oldest_created_at: unspent.oldest ? new Date(unspent.oldest).toISOString() : null,
       note:
-        'Commitment cells this scan has never seen spent. Counted separately, never folded into the averages above — an unresolved close is a different outcome, not a fast one. Some are simply abandoned testnet channels.',
+        'Commitment cells this scan has never seen spent. Counted separately, never folded into the averages above, because an unresolved close is a different outcome rather than a fast one. Some are abandoned testnet channels.',
     },
     caveats: [
-      'Derived from L1 only, so it is complete — unlike node-level attribution, which covers 0.29% of events.',
+      'Derived from L1 only, so it is complete, unlike node-level attribution, which covers 0.29% of events.',
       'A long settlement time is usually a contract delay period elapsing, not a participant failing.',
     ],
   };
@@ -549,7 +549,7 @@ function concentration(c: Ctx) {
       nodes_in_gossip: rows.length,
       announced_open_channels: chans.length,
       note:
-        'Covers only channels currently announced in gossip, because node identity exists nowhere else. It is not the whole archive — compare /summary.channels.open.',
+        'Covers only channels currently announced in gossip, because node identity exists nowhere else. It is not the whole archive; compare /summary.channels.open.',
       why_participants_can_exceed_nodes:
         'A channel keeps both pubkeys after a node stops announcing itself, so `participants` counts every pubkey holding an announced open channel and can exceed `nodes_in_gossip`. Neither number is wrong; they answer different questions.',
     },
@@ -673,7 +673,7 @@ function reliability(net: NetworkStore, pubkey: string | null, windowBlocks: num
       rates: null,
       node_attributed_events: 0,
       no_data_reason: pubkey
-        ? 'No on-chain event in this window is attributable to this node. Attribution needs the channel present in gossip while it was open (SPEC-FAULTLINE §3.1); most closes predate any observation of them. This is not a clean record — it is no record.'
+        ? 'No on-chain event in this window is attributable to this node. Attribution needs the channel present in gossip while it was open (SPEC-FAULTLINE §3.1); most closes predate any observation of them. This is an absence of record, not a clean record.'
         : 'No on-chain event falls in this window.',
       caveats: CAVEATS,
     };
@@ -1055,7 +1055,7 @@ function eras(c: Ctx) {
     note:
       'Force-close rate is not stationary. Reliability must be read per era, never as a lifetime aggregate (SPEC-FAULTLINE §4.1).',
     era_definition:
-      'An era is a 1,000,000-block bucket of the channel CLOSE height — a unit of chain progress, not a calendar month. observed_from/observed_to are the real header timestamps of the earliest and latest close in the bucket, so bucket widths in wall-clock time are unequal.',
+      'An era is a 1,000,000-block bucket of the channel CLOSE height, which is a unit of chain progress rather than a calendar month. observed_from/observed_to are the real header timestamps of the earliest and latest close in the bucket, so bucket widths in wall-clock time are unequal.',
     min_samples_for_rate: MIN_ERA_SAMPLES,
     eras: rows.map((r) => ({
       block_era: `${r.era}M`,
@@ -1123,7 +1123,7 @@ function lsps(c: Ctx) {
     excluded_signal: {
       signal: 'faultline',
       reason:
-        'SPEC-ATLAS §6 lists Faultline as a ranking input. It is deliberately omitted: node-level attribution covers 1 force-close and 0 penalties across the entire archive, so any reliability term would rank on noise. See /v0/{network}/summary → attribution.',
+        'SPEC-ATLAS §6 lists Faultline as a ranking input. It is omitted here because node-level attribution covers 1 force-close and 0 penalties across the entire archive, which is too few observations for a reliability term to order candidates by. See /v0/{network}/summary → attribution.',
     },
     candidates: rows.map((r) => ({
       pubkey: r.pubkey,
@@ -1171,7 +1171,7 @@ function summary(c: Ctx) {
       force_close: ch.force ?? 0,
       force_close_rate_lifetime: closed ? Number(((ch.force ?? 0) / closed).toFixed(4)) : null,
       lifetime_rate_warning:
-        'Lifetime rates are published for completeness and MUST NOT be used as a reliability signal — see /eras.',
+        'Lifetime rates are published for completeness and MUST NOT be used as a reliability signal. See /eras.',
     },
     penalties_all_time: pen.n,
     gossip: {

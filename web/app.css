@@ -214,6 +214,20 @@ footer.bottom {
   color: var(--dim);
   line-height: 1.7;
 }
+footer.bottom a { color: var(--dim); text-decoration: underline; text-underline-offset: 2px; }
+footer.bottom a:hover { color: var(--ink); }
+
+/* Repo citations inside prose: SPEC-ATLAS §3, plan.md, src/ckb/outpoint.ts.
+   Kept quiet enough that a paragraph still reads as a paragraph, but underlined
+   so a citation is visibly followable rather than decorative. */
+a.ref {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+  text-decoration-color: var(--ghost);
+}
+a.ref:hover { text-decoration-style: solid; text-decoration-color: currentColor; }
 
 /* --------------------------------------------------------------- page intro */
 
